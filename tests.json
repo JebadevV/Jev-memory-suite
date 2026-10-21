@@ -1,0 +1,34 @@
+﻿{
+    "schemaVersion":  1,
+    "updatedAt":  "2026-10-21",
+    "checks":  [
+                   {
+                       "id":  "M0-executor",
+                       "status":  "passed",
+                       "command":  "Get-Location; executor marker; workspace read/write probe; git status --short --branch; git rev-parse --show-toplevel",
+                       "evidence":  ".local/environment-probe.txt",
+                       "observed":  "Correct workspace, read/write OK, existing Git main without commits, no ownership or sandbox error"
+                   },
+                   {
+                       "id":  "M1-scaffold",
+                       "status":  "passed",
+                       "command":  "PowerShell required-file assertions; ConvertFrom-Json tests.json; git diff --check",
+                       "observed":  "All required files and documentation directories exist; test register parsed"
+                   }
+               ],
+    "milestones":  {
+                       "M0":  "passed",
+                       "M1":  "passed",
+                       "M2":  "pending",
+                       "M3":  "pending",
+                       "M4":  "pending",
+                       "M5":  "pending",
+                       "M6":  "pending",
+                       "M7":  "pending"
+                   },
+    "clients":  {
+                    "claudeCli":  "pending",
+                    "codexCli":  "pending",
+                    "codexDesktop":  "pending"
+                }
+}
