@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "workspace": "jev-suite",
+  "project": "jev-memory-suite",
+  "controlPort": 18877,
+  "memory": { "enabled": true, "port": 49375 },
+  "gateway": {
+    "enabled": false, "port": 18878,
+    "upstreamUrl": "https://api.openai.com/v1",
+    "jevUrl": "https://api.typesafe.ai/v1/systemone",
+    "allowedHosts": ["api.openai.com", "api.typesafe.ai"],
+    "upstreamKeyEnv": "JMS_UPSTREAM_KEY", "jevKeyEnv": "JMS_JEV_KEY"
+  }
+}
