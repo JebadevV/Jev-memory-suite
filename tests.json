@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-21T19:27:16.046Z",
+  "updatedAt": "2026-10-21T19:33:17.102Z",
   "checks": [
     {
       "id": "M0-executor",
@@ -48,6 +48,13 @@
       "command": "Claude: jev-memory launch claude --dir fixture -- -p ... --include-hook-events --setting-sources project,local; Codex: jev-memory launch codex --dir fixture -- exec -c features.hooks=false --json; upstream: tsc+vitest (gateway), cargo fmt + cargo test -p ai-memory-hooks -p ai-memory-core",
       "observed": "Claude Code CLI APROVADO: MCP conectado, 5 hooks reais exit 0, 7 observacoes capturadas, token recuperado, persistencia apos restart, recuperacao por nova sessao (2 defeitos do launch corrigidos). Codex CLI PARCIAL: MCP memory_status/memory_query reais e recuperacao cruzada da sessao do Claude; captura por hooks PENDENTE de confianca nativa (/hooks). Codex Desktop PENDENTE: exige uso no app. Upstream: gateway typecheck ok, vitest 397/400 (3 falhas Windows launcher/setup); AI Memory fmt ok, 956/957 (falha router mid_session_out_of_tree, causa provavel TEMP dentro do checkout, nao verificada). Evidencias .local/evidence/M6-*.",
       "evidence": ".local/evidence/"
+    },
+    {
+      "id": "M7-1792611197102",
+      "status": "passed",
+      "command": "check-docs (30 arquivos, 0 problemas); npm audit; pnpm audit --prod; cargo audit (local); npm run build/lint/typecheck; npm test (53); npm run test:e2e (4)",
+      "observed": "Documentacao completa (arquitetura+Mermaid, ADRs 0002-0005, API, guias, seguranca, runbooks, README indice). Revisao OWASP Top 10/ASVS e LGPD documentada. Correcoes: smol-toml 1.9.1, pnpm 10.34.6, router-token separado do control-token (e2e prova 401 cruzados). Residuais: esbuild low (dev), hono moderate em serveStatic nao usado, paste sem manutencao, cargo deny e cargo test --workspace nao executados, modos 0600 sem efeito no Windows.",
+      "evidence": ".local/evidence/"
     }
   ],
   "milestones": {
@@ -58,7 +65,7 @@
     "M4": "passed",
     "M5": "passed",
     "M6": "partial",
-    "M7": "pending"
+    "M7": "passed"
   },
   "clients": {
     "claudeCli": "passed",

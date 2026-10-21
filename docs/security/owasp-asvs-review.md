@@ -45,7 +45,7 @@ Esta é uma revisão de mesa, feita sobre o código e os testes do repositório.
 
 ## Pendências para o gate M7
 
-- Executar `cargo audit` ou `cargo deny`.
+- Executar `cargo deny` (o `cargo audit` já foi executado: 0 vulnerabilidades, 1 aviso de manutenção).
 - Validar o caminho Claude → Gateway → Anthropic com cabeçalho adequado, ou documentar a limitação como bloqueio.
 - Revisar os logs com dados sintéticos para confirmar a redação.
 - Validar as ACLs de `.local/` no Windows de forma reproduzível.

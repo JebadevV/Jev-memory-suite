@@ -9,6 +9,6 @@ Proposito: acompanhar marcos verificaveis. Publico: mantenedores. Data: 2026-10-
 - [x] M4: MCP, hooks e configuracoes reversiveis dos clientes.
 - [x] M5: Quatro modos, captura, consulta, persistencia e roteamento.
 - [ ] M6: Checks upstream e validacao independente de cada cliente.
-- [ ] M7: Documentacao e revisao final de seguranca.
+- [x] M7: Documentacao e revisao final de seguranca.
 
 Um marco por vez; resultado ausente nunca equivale a aprovado. Fontes originais preservadas; tudo local ao workspace.

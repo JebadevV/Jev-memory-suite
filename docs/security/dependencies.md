@@ -34,7 +34,7 @@ Registros em `.local/evidence/M7-dependency-audit.txt`.
 | Suíte, `npm audit` | Alerta alto em `pnpm` 10.33.3 | Corrigido para 10.34.6 |
 | Suíte, `npm audit` | Alerta baixo em `esbuild`, dependência transitiva de `tsx` (usada em desenvolvimento) | Pendente. Afeta o servidor de desenvolvimento do esbuild, que a suíte não usa. |
 | Gateway, `pnpm audit --prod` | Alerta moderado em `hono` (GHSA-5r4p-p66f-jhc7), via `serveStatic` | Não corrigido no lockfile do upstream. O código do Gateway não usa `serveStatic`, conforme a análise registrada. |
-| AI Memory, `cargo audit` e `cargo deny` | Não executados | Pendente (M7) |
+| AI Memory, `cargo audit` 0.x (instalado em `.local/tools`, base em `.local/advisory-db`) | 518 crates, 0 vulnerabilidades; 1 aviso: `paste` 1.0.15 sem manutenção (RUSTSEC-2024-0436) | Executado; `cargo deny` não executado |
 
 A saída completa, antes e depois das correções, está no arquivo de evidência. `npm audit fix --force` não foi aplicado, porque pode alterar versões de forma incompatível.
 
@@ -51,11 +51,11 @@ Registros em `.local/evidence/M6-memory-upstream-checks.txt`.
 
 - Executados: `cargo fmt --check` (passou) e `cargo test -p ai-memory-core -p ai-memory-hooks` (956 de 957 testes aprovados).
 - Falha registrada: `router::tests::mid_session_out_of_tree_cwd_sticks_under_repo_root`. A causa provável é o `TEMP` estar dentro do checkout Git, mas isso **não foi verificado**.
-- **Não executados:** `cargo test --workspace`, `cargo deny` e `cargo audit`. As ferramentas de `cargo audit` e `cargo deny` não estão instaladas no ambiente.
+- **Não executados:** `cargo test --workspace` e `cargo deny`. `cargo audit` foi executado com binário compilado localmente (`cargo install cargo-audit --locked --root .local/tools`, sem instalação global); evidência em `.local/evidence/M7-cargo-audit.txt`.
 
 ## Pendências
 
-1. Executar `cargo test --workspace`, `cargo audit` e `cargo deny` no AI Memory, após instalar as ferramentas.
+1. Executar `cargo test --workspace` e `cargo deny` no AI Memory.
 2. Investigar a falha `mid_session_out_of_tree_cwd_sticks_under_repo_root` e confirmar a causa.
 2. Reavaliar o alerta do `hono` antes de habilitar o Gateway em uso real.
 3. Reavaliar o alerta do `esbuild` quando o `tsx` for atualizado.
