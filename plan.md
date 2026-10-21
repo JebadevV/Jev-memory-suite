@@ -1,18 +1,18 @@
-# Plano de implementaÃ§Ã£o
+# Plano de implementaÃƒÂ§ÃƒÂ£o
 
-PropÃ³sito: plano verificÃ¡vel da integraÃ§Ã£o. PÃºblico: mantenedores. Data: 2026-10-21.
+PropÃƒÂ³sito: plano verificÃƒÂ¡vel da integraÃƒÂ§ÃƒÂ£o. PÃƒÂºblico: mantenedores. Data: 2026-10-21.
 
-Preservar os motores oficiais como subtrees e implementar um gerenciador local separado. InstalaÃ§Ãµes, configuraÃ§Ãµes de teste e memÃ³rias sintÃ©ticas ficam no workspace. Nenhuma validaÃ§Ã£o ausente serÃ¡ apresentada como concluÃ­da.
+Preservar os motores oficiais como subtrees e implementar um gerenciador local separado. InstalaÃƒÂ§ÃƒÂµes, configuraÃƒÂ§ÃƒÂµes de teste e memÃƒÂ³rias sintÃƒÂ©ticas ficam no workspace. Nenhuma validaÃƒÂ§ÃƒÂ£o ausente serÃƒÂ¡ apresentada como concluÃƒÂ­da.
 
-- [x] M0 â€” Verificar executor, leitura/escrita, Git e propriedade na pasta atual.
-- [x] M1 â€” Criar estrutura, registro de testes e instruÃ§Ãµes; validar e criar commit inicial.
-- [ ] M2 â€” Importar os dois subtrees, ler documentaÃ§Ã£o/contratos e registrar proveniÃªncia/licenÃ§as.
-- [ ] M3 â€” Implementar configuraÃ§Ã£o estrita, instalaÃ§Ã£o, ciclo de vida, atualizaÃ§Ã£o e diagnÃ³stico locais.
-- [ ] M4 â€” Implementar integraÃ§Ã£o MCP, hooks, perfis de clientes e recuperaÃ§Ã£o reversÃ­vel.
-- [ ] M5 â€” Executar testes reais dos quatro modos, persistÃªncia/reinÃ­cio e roteamento.
-- [ ] M6 â€” Executar verificaÃ§Ãµes upstream e validaÃ§Ãµes separadas dos trÃªs clientes.
-- [ ] M7 â€” Concluir documentaÃ§Ã£o, revisÃ£o de seguranÃ§a e relatÃ³rio honesto dos gates.
+- [x] M0 Ã¢â‚¬â€ Verificar executor, leitura/escrita, Git e propriedade na pasta atual.
+- [x] M1 Ã¢â‚¬â€ Criar estrutura, registro de testes e instruÃƒÂ§ÃƒÂµes; validar e criar commit inicial.
+- [x] M2 Ã¢â‚¬â€ Importar os dois subtrees, ler documentaÃƒÂ§ÃƒÂ£o/contratos e registrar proveniÃƒÂªncia/licenÃƒÂ§as.
+- [ ] M3 Ã¢â‚¬â€ Implementar configuraÃƒÂ§ÃƒÂ£o estrita, instalaÃƒÂ§ÃƒÂ£o, ciclo de vida, atualizaÃƒÂ§ÃƒÂ£o e diagnÃƒÂ³stico locais.
+- [ ] M4 Ã¢â‚¬â€ Implementar integraÃƒÂ§ÃƒÂ£o MCP, hooks, perfis de clientes e recuperaÃƒÂ§ÃƒÂ£o reversÃƒÂ­vel.
+- [ ] M5 Ã¢â‚¬â€ Executar testes reais dos quatro modos, persistÃƒÂªncia/reinÃƒÂ­cio e roteamento.
+- [ ] M6 Ã¢â‚¬â€ Executar verificaÃƒÂ§ÃƒÂµes upstream e validaÃƒÂ§ÃƒÂµes separadas dos trÃƒÂªs clientes.
+- [ ] M7 Ã¢â‚¬â€ Concluir documentaÃƒÂ§ÃƒÂ£o, revisÃƒÂ£o de seguranÃƒÂ§a e relatÃƒÂ³rio honesto dos gates.
 
-Escopo: monorepo, gerenciador, integraÃ§Ã£o local, testes sintÃ©ticos, documentaÃ§Ã£o e evidÃªncias. NÃ£o inclui publicaÃ§Ã£o, alteraÃ§Ãµes globais nem uso de memÃ³rias/credenciais pessoais nos testes.
+Escopo: monorepo, gerenciador, integraÃƒÂ§ÃƒÂ£o local, testes sintÃƒÂ©ticos, documentaÃƒÂ§ÃƒÂ£o e evidÃƒÂªncias. NÃƒÂ£o inclui publicaÃƒÂ§ÃƒÂ£o, alteraÃƒÂ§ÃƒÂµes globais nem uso de memÃƒÂ³rias/credenciais pessoais nos testes.
 
-Gates: cada marco exige atualizaÃ§Ã£o de progress.md e tests.json, evidÃªncia e checagens pertinentes aprovadas antes de avanÃ§ar. Bloqueios externos de validaÃ§Ã£o devem ficar explÃ­citos.
+Gates: cada marco exige atualizaÃƒÂ§ÃƒÂ£o de progress.md e tests.json, evidÃƒÂªncia e checagens pertinentes aprovadas antes de avanÃƒÂ§ar. Bloqueios externos de validaÃƒÂ§ÃƒÂ£o devem ficar explÃƒÂ­citos.

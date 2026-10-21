@@ -14,12 +14,18 @@
                        "status":  "passed",
                        "command":  "PowerShell required-file assertions; ConvertFrom-Json tests.json; git diff --check",
                        "observed":  "All required files and documentation directories exist; test register parsed"
+                   },
+                   {
+                       "id":  "M2-subtrees",
+                       "status":  "passed",
+                       "command":  "git subtree add --prefix=\u003cprefix\u003e \u003cofficial-url\u003e \u003csha\u003e --squash; git diff --exit-code \u003csha\u003e^{tree} HEAD:\u003cprefix\u003e",
+                       "observed":  "Both imported trees exactly match their source commits; MIT licenses preserved; no submodules"
                    }
                ],
     "milestones":  {
                        "M0":  "passed",
                        "M1":  "passed",
-                       "M2":  "pending",
+                       "M2":  "passed",
                        "M3":  "pending",
                        "M4":  "pending",
                        "M5":  "pending",

@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "importedAt": "2026-10-21",
+  "engines": {
+    "jev": {"repository":"https://github.com/vinilana/jev-gateway.git","prefix":"upstream/jev-gateway","commit":"71bfdd18903b24081bf338d0516116fab197bd3d","version":"0.5.1","license":"MIT"},
+    "memory": {"repository":"https://github.com/akitaonrails/ai-memory.git","prefix":"upstream/ai-memory","commit":"ad264519488c06e4468f1ad9f805d5fed2f97855","version":"3.1.2","license":"MIT"}
+  }
+}

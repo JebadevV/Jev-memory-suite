@@ -15,3 +15,7 @@ Estrutura obrigatória criada e validada por asserções de existência e parse 
 ## Gates finais
 
 Build/lint/typecheck/E2E dos motores e integraÃ§Ã£o: pendentes. Claude CLI, Codex CLI e Codex Desktop: pendentes, separadamente.
+
+## M2 — aprovado
+
+Dois subtrees oficiais importados e comparados integralmente com as árvores de origem (git diff, exit 0). Commits e versões em upstream.sources.json; licenças e atribuições preservadas. Contratos e fronteiras documentados no ADR 0001. Sem alterações às fontes. A versão do release v3.1.2 aponta para commit distinto do main importado: a instalação usará build da fonte fixada, sem confundir o release com esse commit.
