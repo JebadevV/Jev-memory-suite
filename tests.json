@@ -1,40 +1,68 @@
-﻿{
-    "schemaVersion":  1,
-    "updatedAt":  "2026-10-21",
-    "checks":  [
-                   {
-                       "id":  "M0-executor",
-                       "status":  "passed",
-                       "command":  "Get-Location; executor marker; workspace read/write probe; git status --short --branch; git rev-parse --show-toplevel",
-                       "evidence":  ".local/environment-probe.txt",
-                       "observed":  "Correct workspace, read/write OK, existing Git main without commits, no ownership or sandbox error"
-                   },
-                   {
-                       "id":  "M1-scaffold",
-                       "status":  "passed",
-                       "command":  "PowerShell required-file assertions; ConvertFrom-Json tests.json; git diff --check",
-                       "observed":  "All required files and documentation directories exist; test register parsed"
-                   },
-                   {
-                       "id":  "M2-subtrees",
-                       "status":  "passed",
-                       "command":  "git subtree add --prefix=\u003cprefix\u003e \u003cofficial-url\u003e \u003csha\u003e --squash; git diff --exit-code \u003csha\u003e^{tree} HEAD:\u003cprefix\u003e",
-                       "observed":  "Both imported trees exactly match their source commits; MIT licenses preserved; no submodules"
-                   }
-               ],
-    "milestones":  {
-                       "M0":  "passed",
-                       "M1":  "passed",
-                       "M2":  "passed",
-                       "M3":  "pending",
-                       "M4":  "pending",
-                       "M5":  "pending",
-                       "M6":  "pending",
-                       "M7":  "pending"
-                   },
-    "clients":  {
-                    "claudeCli":  "pending",
-                    "codexCli":  "pending",
-                    "codexDesktop":  "pending"
-                }
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-10-21T19:27:16.046Z",
+  "checks": [
+    {
+      "id": "M0-executor",
+      "status": "passed",
+      "command": "Get-Location; executor marker; workspace read/write probe; git status --short --branch; git rev-parse --show-toplevel",
+      "evidence": ".local/environment-probe.txt",
+      "observed": "Correct workspace, read/write OK, existing Git main without commits, no ownership or sandbox error"
+    },
+    {
+      "id": "M1-scaffold",
+      "status": "passed",
+      "command": "PowerShell required-file assertions; ConvertFrom-Json tests.json; git diff --check",
+      "observed": "All required files and documentation directories exist; test register parsed"
+    },
+    {
+      "id": "M2-subtrees",
+      "status": "passed",
+      "command": "git subtree add --prefix=<prefix> <official-url> <sha> --squash; git diff --exit-code <sha>^{tree} HEAD:<prefix>",
+      "observed": "Both imported trees exactly match their source commits; MIT licenses preserved; no submodules"
+    },
+    {
+      "id": "M3-1792601561819",
+      "status": "passed",
+      "command": "cargo +stable build --locked --bin ai-memory; node bin/jev-memory.mjs install gateway; npm run build; npm run lint; npm test; node bin/jev-memory.mjs start",
+      "observed": "AI Memory fonte fixada compilada em 3m45s; Jev instalado e compilado localmente; 3 testes passaram, incluindo supervisor real, autenticacao e preservacao de listener externo. AI Memory iniciou autenticado em loopback. Teste inicial de listener travou e foi corrigido; nova execucao aprovada. Atualizacao subtree implementada, nao executada para manter commits fixados.",
+      "evidence": ".local/evidence/"
+    },
+    {
+      "id": "M4-1792609191317",
+      "status": "passed",
+      "command": "npm run build; npm run lint; npm test (42); jev-memory install all (versioned staging); git rev-parse <sha>^{tree}; jev-memory restart; jev-memory doctor; jev-memory mcp",
+      "observed": "Hook aceita raiz canonica e descendentes, rejeita escapes/junctions/payload invalido antes da config; schemas por evento, limites de stdin/stdout e profundidade; MCP limitado a 4 MB durante leitura; instalacao versionada imutavel (arvores c146869/0d15e05 iguais aos commits upstream) com ponteiro atomico, sem sobrescrever exe em uso; registro de clientes transacional com preflight, backup, rollback testado, propriedade por perfil e preservacao de MCPs/hooks; launch gera configuracao por perfil e recusa registro de outro perfil; testes de clientes independentes do perfil default. 42 testes passaram. Captura real e clientes reais ficam para M5/M6.",
+      "evidence": ".local/evidence/"
+    },
+    {
+      "id": "M5-1792609613105",
+      "status": "passed",
+      "command": "npm run build; npm run test:e2e (4 processos reais: A gateway, B memoria, C ambos, D nenhum)",
+      "observed": "A: supervisor 401 sem token, gateway 401 sem chave, rota 200 com x-jev-gateway-mode=forced/tool=get_synthetic_weather, upstream recebeu so a chave do upstream, Jev consultado; memoria fechada. B: MCP 401 sem bearer, handshake, 24 ferramentas, memory_status com escopo explicito, pagina sintetica escrita/consultada/lida, captura real via dist/src/hook.js + binario ai-memory recuperada, persistencia apos stop/start; gateway fechado. C: ambos prontos, rota e MCP ok. D: services {}, portas fechadas, MCP rejeitado, launch sem flags. LIMITACAO: Jev (mock-jev.mjs upstream) e provedor OpenAI simulados em loopback; nao comprova provedor real. Hooks acionados com payload sintetico; captura por cliente real fica em M6. Evidencias .local/evidence/e2e-*.json",
+      "evidence": ".local/evidence/"
+    },
+    {
+      "id": "M6-1792610836049",
+      "status": "partial",
+      "command": "Claude: jev-memory launch claude --dir fixture -- -p ... --include-hook-events --setting-sources project,local; Codex: jev-memory launch codex --dir fixture -- exec -c features.hooks=false --json; upstream: tsc+vitest (gateway), cargo fmt + cargo test -p ai-memory-hooks -p ai-memory-core",
+      "observed": "Claude Code CLI APROVADO: MCP conectado, 5 hooks reais exit 0, 7 observacoes capturadas, token recuperado, persistencia apos restart, recuperacao por nova sessao (2 defeitos do launch corrigidos). Codex CLI PARCIAL: MCP memory_status/memory_query reais e recuperacao cruzada da sessao do Claude; captura por hooks PENDENTE de confianca nativa (/hooks). Codex Desktop PENDENTE: exige uso no app. Upstream: gateway typecheck ok, vitest 397/400 (3 falhas Windows launcher/setup); AI Memory fmt ok, 956/957 (falha router mid_session_out_of_tree, causa provavel TEMP dentro do checkout, nao verificada). Evidencias .local/evidence/M6-*.",
+      "evidence": ".local/evidence/"
+    }
+  ],
+  "milestones": {
+    "M0": "passed",
+    "M1": "passed",
+    "M2": "passed",
+    "M3": "passed",
+    "M4": "passed",
+    "M5": "passed",
+    "M6": "partial",
+    "M7": "pending"
+  },
+  "clients": {
+    "claudeCli": "passed",
+    "codexCli": "partial (MCP passed; hook capture pending native trust)",
+    "codexDesktop": "pending (requires validation inside the app)"
+  }
 }
