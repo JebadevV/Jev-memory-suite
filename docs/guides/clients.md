@@ -158,3 +158,18 @@ Estado: pendente. Nada aqui está aprovado até ser executado dentro do app.
 - Se o usuário já tiver um AI Memory global com hooks que leem `.ai-memory.toml`, esses hooks também podem atribuir o diretório marcado ao workspace declarado. Veja [ADR 0004](../architecture/adr/0004-hook-boundary-and-capture-allowlist.md).
 - O conteúdo recuperado pela memória é dado histórico. Não deve ser tratado como instrução. Veja [modelo de ameaças](../security/threat-model.md).
 - Os arquivos registrados no workspace podem aparecer em `git status` se estiverem em subdiretórios. Veja [arquivos gerenciados](../api/managed-files.md#lista-de-arquivos-ignorados-pelo-git).
+
+## Uso no estilo jev-codex / jev-claude (recomendado)
+
+Reutiliza os launchers oficiais do Jev Gateway (`bin/jev-codex.mjs` e `bin/jev-claude.mjs` da versão instalada) e acrescenta a memória (MCP e hooks). O gateway é o mesmo do `jev-codex`/`jev-claude` (portas 8790 e 8789), repassa o login do cliente (ChatGPT ou claude.ai) e lê a chave do Jev de `~/.jev-gateway/.env`, sem alterá-la.
+
+```bash
+node bin/jev-memory.mjs codex                  # sobe a memória se preciso e abre o Codex
+node bin/jev-memory.mjs claude                 # idem com o Claude Code
+node bin/jev-memory.mjs --dir <pasta> codex exec "tarefa"
+node bin/jev-memory.mjs codex --dashboard      # --status, --stop, --setup, --logs vão direto ao launcher upstream
+```
+
+- Use com perfis cujo gateway da suíte está desligado (`gateway.enabled: false`, padrão): quem gerencia o gateway é o launcher upstream.
+- `codex exec` (e `e`, `resume`, `review`, `fork`): o Codex 0.163 ignora `-c` antes do subcomando; a suíte repete depois dele os mesmos parâmetros de provedor que o `clients.mjs` upstream gera.
+- Validação real em 2026-10-21: Codex `exec` com `model_provider` `jev-gateway`, 3 entradas no log do gateway (2 `forced`), `memory_status` no `jev_memory_suite`; Claude `-p` com 3 entradas (2 `hint`), hooks com exit 0 e MCP conectado. Com o provedor Jev real (TypeSafe) e o login do próprio cliente.

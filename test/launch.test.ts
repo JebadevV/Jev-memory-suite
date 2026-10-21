@@ -1,12 +1,13 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { configSchema, json, profileDir, readConfig, root } from '../src/config.js';
 import { atomicJson, token, type TokenFile } from '../src/local.js';
 import { init } from '../src/lifecycle.js';
-import { nativeArgv, ownRootRegistration, planLaunch } from '../src/launch.js';
+import { nativeArgv, ownRootRegistration, planLaunch, jevLauncherArgv, jevLauncherPath, codexProviderArgs, loadUpstreamCodexSpec } from '../src/launch.js';
+import { delegatedCommand } from '../src/cli-args.js';
 
 async function profile(t: TestContext): Promise<string> {
   const name = `launch-${Date.now()}-${randomBytes(3).toString('hex')}`;
@@ -118,4 +119,72 @@ test('plan reads the root registration from the launch cwd, not the workspace ro
   const name = await profile(t), dir = await fixture(t);
   await writeFile(resolve(dir, '.jev-memory-claude.json'), JSON.stringify({ profile: 'other' }));
   await assert.rejects(planLaunch('claude', name, dir), /belongs to profile/);
+});
+
+test('jev-launcher passthrough keeps upstream flags unchanged and adds no memory arguments', () => {
+  assert.deepEqual(jevLauncherArgv('codex', ['-c', 'a=1'], ['--dashboard']), { passthrough: true, argv: ['--dashboard'] });
+  assert.deepEqual(jevLauncherArgv('claude', ['--mcp-config', 'x'], ['--status']), { passthrough: true, argv: ['--status'] });
+});
+
+test('jev-launcher codex places plan args right after the exec subcommand', () => {
+  assert.deepEqual(jevLauncherArgv('codex', ['-c', 'a=1'], ['exec', 'hi']), { passthrough: false, argv: ['exec', '-c', 'a=1', 'hi'] });
+});
+
+test('jev-launcher codex subcommand places provider and plan args right after it', () => {
+  const provider = ['-c', 'model_provider="jev-gateway"'];
+  assert.deepEqual(jevLauncherArgv('codex', ['-c', 'a=1'], ['exec', 'hi'], provider),
+    { passthrough: false, argv: ['exec', '-c', 'model_provider="jev-gateway"', '-c', 'a=1', 'hi'] });
+});
+
+test('jev-launcher interactive codex does not add provider args', () => {
+  assert.deepEqual(jevLauncherArgv('codex', ['-c', 'a=1'], ['hi'], ['-c', 'model_provider="jev-gateway"']),
+    { passthrough: false, argv: ['-c', 'a=1', 'hi'] });
+});
+
+test('installed upstream codex spec supplies the jev-gateway provider overrides', async () => {
+  const spec = await loadUpstreamCodexSpec();
+  const args = spec.args('http://127.0.0.1:8790');
+  assert.ok(args.includes('model_provider="jev-gateway"'));
+  assert.ok(args.includes('model_providers.jev-gateway.requires_openai_auth=true'));
+  assert.equal(spec.defaultPort, 8790);
+  assert.equal(spec.portEnv, 'JEV_CODEX_PORT');
+});
+
+test('codex provider args follow the upstream port env, defaulting to 8790', async () => {
+  const spec = await loadUpstreamCodexSpec();
+  const previous = process.env.JEV_CODEX_PORT;
+  delete process.env.JEV_CODEX_PORT;
+  try {
+    assert.deepEqual(await codexProviderArgs(), spec.args('http://127.0.0.1:8790'));
+  } finally {
+    if (previous === undefined) delete process.env.JEV_CODEX_PORT; else process.env.JEV_CODEX_PORT = previous;
+  }
+});
+
+test('jev-launcher claude places plan args before the prompt', () => {
+  assert.deepEqual(jevLauncherArgv('claude', ['--mcp-config', 'x'], ['-p', 'hi']), { passthrough: false, argv: ['--mcp-config', 'x', '-p', 'hi'] });
+});
+
+test('jev-launcher path points at the upstream launcher inside the gateway engine', () => {
+  const base = resolve('/engines/jev-gateway');
+  assert.equal(jevLauncherPath('codex', base), resolve(base, 'bin', 'jev-codex.mjs'));
+  assert.equal(jevLauncherPath('claude', base), resolve(base, 'bin', 'jev-claude.mjs'));
+});
+
+test('installed upstream launchers exist in the real gateway engine', async () => {
+  assert.ok((await stat(jevLauncherPath('codex'))).isFile());
+  assert.ok((await stat(jevLauncherPath('claude'))).isFile());
+});
+
+test('cli routes codex and claude commands and keeps everything after them raw', () => {
+  assert.deepEqual(delegatedCommand(['--profile', 'x', 'codex', '--dashboard']), { head: ['--profile', 'x'], client: 'codex', rest: ['--dashboard'] });
+  assert.deepEqual(delegatedCommand(['codex', 'exec', '--profile', 'y']), { head: [], client: 'codex', rest: ['exec', '--profile', 'y'] });
+  assert.deepEqual(delegatedCommand(['--dir', 'sub', 'claude', '-p', 'hi']), { head: ['--dir', 'sub'], client: 'claude', rest: ['-p', 'hi'] });
+});
+
+test('cli leaves other commands alone, including launch with a client argument', () => {
+  assert.equal(delegatedCommand(['status']), undefined);
+  assert.equal(delegatedCommand(['launch', 'codex', '--', 'exec']), undefined);
+  assert.equal(delegatedCommand(['--profile', 'codex']), undefined);
+  assert.equal(delegatedCommand([]), undefined);
 });

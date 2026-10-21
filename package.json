@@ -7,7 +7,9 @@
     "node": ">=24"
   },
   "bin": {
-    "jev-memory": "bin/jev-memory.mjs"
+    "jev-memory": "bin/jev-memory.mjs",
+    "jev-memory-codex": "bin/jev-memory-codex.mjs",
+    "jev-memory-claude": "bin/jev-memory-claude.mjs"
   },
   "scripts": {
     "build": "tsc",

@@ -5,7 +5,8 @@ import { update } from './update.js';
 import { profileName, readConfig } from './config.js';
 import { clients } from './clients.js';
 import { checkMcp } from './mcp.js';
-import { launch } from './launch.js';
+import { launch, jevLaunch } from './launch.js';
+import { delegatedCommand } from './cli-args.js';
 
 async function printStatus(name: string): Promise<void> {
   const state = await supervisorState(name);
@@ -17,7 +18,13 @@ async function printStatus(name: string): Promise<void> {
 }
 
 async function main() {
-  const raw = process.argv.slice(2), separator = raw.indexOf('--');
+  const raw = process.argv.slice(2), delegated = delegatedCommand(raw);
+  if (delegated) {
+    const { values } = parseArgs({ args: delegated.head, allowPositionals: true, options: { profile: { type: 'string', default: 'default' }, dir: { type: 'string', default: '.' } } });
+    await jevLaunch(delegated.client, profileName.parse(values.profile), delegated.rest, values.dir);
+    return;
+  }
+  const separator = raw.indexOf('--');
   const nativeArgs = separator < 0 ? [] : raw.slice(separator + 1);
   const { values, positionals: args } = parseArgs({ args: separator < 0 ? raw : raw.slice(0, separator), allowPositionals: true, options: { profile: { type: 'string', default: 'default' }, dir: { type: 'string', default: '.' } } });
   const name = profileName.parse(values.profile), [cmd, a, b] = args;
@@ -34,7 +41,7 @@ async function main() {
     case 'mcp': console.log(JSON.stringify(await checkMcp(name), null, 2)); break;
     case 'clients': if (!a || !b || !args[3]) throw new Error('clients install|remove|check claude|codex|desktop <workspace-relative-dir>'); console.log(JSON.stringify(await clients(a, b, name, args[3]), null, 2)); break;
     case 'launch': if (!a) throw new Error('launch claude|codex [--dir <workspace-relative-dir>] -- <native arguments>'); await launch(a, name, nativeArgs, values.dir); break;
-    default: console.log('jev-memory [--profile name] init|install [all|gateway|memory]|start|stop|restart|status|doctor|recover|config <file>|update <engine> <sha>|mcp|clients install|remove|check claude|codex|desktop <dir>|launch claude|codex [--dir <workspace-relative-dir>] -- <args>');
+    default: console.log('jev-memory [--profile name] init|install [all|gateway|memory]|start|stop|restart|status|doctor|recover|config <file>|update <engine> <sha>|mcp|clients install|remove|check claude|codex|desktop <dir>|launch claude|codex [--dir <workspace-relative-dir>] -- <args>|codex|claude [args|--dashboard|--status|--stop|--setup]  (reuses upstream jev-codex/jev-claude + AI Memory)');
   }
 }
 main().catch(e => { console.error(e instanceof Error ? e.message : 'Command failed'); process.exitCode = 1; });

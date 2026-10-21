@@ -2,11 +2,13 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { access, readFile, realpath, stat } from 'node:fs/promises';
 import { dirname, relative, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { parse } from 'smol-toml';
 import { z } from 'zod';
 import { assertLocal, prepare, profileDir, readConfig, root, workspaceDir, type Config } from './config.js';
 import { atomicJson, token } from './local.js';
-import { control } from './lifecycle.js';
+import { control, running, start } from './lifecycle.js';
+import { gatewayDir } from './install.js';
 import { bridgeEntry, hookEntries, serverId } from './clients.js';
 
 export type Client = 'claude' | 'codex';
@@ -145,6 +147,60 @@ export async function launch(client: string, name: string, args: string[], dir =
   const plan = await planLaunch(supported, name, cwd);
   await new Promise<void>((ok, fail) => {
     const child = spawn(executable.command, [...executable.prefix, ...nativeArgv(supported, plan.args, args)],{ cwd, env: plan.env, shell: false, windowsHide: true, stdio: 'inherit' });
+    child.once('error', fail); child.once('exit', code => code === 0 ? ok() : fail(new Error(`${supported} exit ${code}`)));
+  });
+}
+
+// Upstream launcher flags are handled by jev-<client> itself; memory arguments must not be added to them.
+export const launcherFlags = new Set(['--dashboard', '--status', '--stop', '--start', '--setup', '--logs', '--routing', '--print-config', '--gateway-help']);
+// The upstream launcher prefixes codex's spec overrides before the argv, which codex subcommands ignore.
+export function hasCodexSubcommand(client: Client, userArgs: string[]): boolean {
+  return client === 'codex' && codexSubcommands.has(userArgs[0] ?? '');
+}
+export function jevLauncherArgv(client: Client, planArgs: string[], userArgs: string[], providerArgs: string[] = []): { passthrough: boolean; argv: string[] } {
+  if (launcherFlags.has(userArgs[0] ?? '')) return { passthrough: true, argv: userArgs };
+  if (hasCodexSubcommand(client, userArgs)) {
+    const [subcommand = '', ...rest] = userArgs;
+    return { passthrough: false, argv: [subcommand, ...providerArgs, ...planArgs, ...rest] };
+  }
+  return { passthrough: false, argv: nativeArgv(client, planArgs, userArgs) };
+}
+export function jevLauncherPath(client: Client, dir = gatewayDir()): string {
+  return resolve(dir, 'bin', `jev-${client}.mjs`);
+}
+interface UpstreamCodexSpec { portEnv: string; defaultPort: number; args: (origin: string) => string[] }
+// Loads the installed upstream codex spec so the suite reuses its provider overrides instead of copying them.
+export async function loadUpstreamCodexSpec(dir = gatewayDir()): Promise<UpstreamCodexSpec> {
+  const mod = await import(pathToFileURL(resolve(dir, 'bin', 'clients.mjs')).href) as { codex?: Partial<UpstreamCodexSpec> };
+  const spec = mod.codex;
+  if (!spec || typeof spec.args !== 'function' || typeof spec.portEnv !== 'string' || typeof spec.defaultPort !== 'number')
+    throw new Error('Installed gateway clients.mjs has no usable codex spec');
+  return spec as UpstreamCodexSpec;
+}
+// Provider overrides for codex subcommands, using the same port source as the upstream launcher.
+export async function codexProviderArgs(dir = gatewayDir()): Promise<string[]> {
+  const spec = await loadUpstreamCodexSpec(dir);
+  const port = Number(process.env[spec.portEnv] ?? spec.defaultPort);
+  return spec.args(`http://127.0.0.1:${port}`);
+}
+async function ensureMemoryReady(name: string): Promise<void> {
+  if (!(await running(name))) await start(name);
+  const state = await control(name, 'status');
+  const services = state.services as Record<string, unknown> | undefined;
+  if (services?.memory !== 'ready') throw new Error('Memory service is not ready; run doctor');
+}
+// Runs the upstream jev-<client> launcher, which owns the gateway and the client's own login.
+export async function jevLaunch(client: string, name: string, userArgs: string[], dir = '.'): Promise<void> {
+  const supported = clientName(client), c = await readConfig(name), cwd = await workspaceDir(resolve(root, dir));
+  if (c.gateway.enabled) throw new Error('The suite gateway is enabled for this profile; jev-<client> owns the gateway. Disable gateway in the profile or use `launch`.');
+  const passthrough = launcherFlags.has(userArgs[0] ?? '');
+  const plan = passthrough ? undefined : await planLaunch(supported, name, cwd);
+  const providerArgs = hasCodexSubcommand(supported, userArgs) ? await codexProviderArgs() : [];
+  const { argv } = jevLauncherArgv(supported, plan?.args ?? [], userArgs, providerArgs);
+  if (!passthrough && c.memory.enabled) await ensureMemoryReady(name);
+  const env = plan?.env ?? process.env;
+  await new Promise<void>((ok, fail) => {
+    const child = spawn(process.execPath, [jevLauncherPath(supported), ...argv], { cwd, env, shell: false, windowsHide: true, stdio: 'inherit' });
     child.once('error', fail); child.once('exit', code => code === 0 ? ok() : fail(new Error(`${supported} exit ${code}`)));
   });
 }
