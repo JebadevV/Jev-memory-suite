@@ -149,6 +149,7 @@ async function createProfile(mode: Mode, flags: { memory: boolean; gateway: bool
   const routing = rig ? { upstreamUrl: rig.upstream.url, jevUrl: rig.jevUrl, allowedHosts: ['127.0.0.1'] } : {};
   const config = configSchema.parse({
     ...base, controlPort: ports.control,
+    dashboard: { port: await freeTcpPort() },
     memory: { enabled: flags.memory, port: ports.memory },
     gateway: { ...base.gateway, ...routing, enabled: flags.gateway, port: ports.gateway }
   });
@@ -310,7 +311,7 @@ test('memory only: MCP auth, tools, synthetic page, hook capture and persistence
     const state = await startProfile(name);
     evidence.startMs = Date.now() - startAt;
     assert.equal(state.phase, 'ready');
-    assert.deepEqual(state.services, { memory: 'ready' });
+    assert.deepEqual(state.services, { memory: 'ready', dashboard: 'ready' });
     evidence.services = state.services;
     evidence.unauthenticatedMcpStatus = await unauthenticatedMemory(c);
     await assertMemoryTools(name, c, stamp, evidence);
@@ -355,7 +356,7 @@ test('gateway and memory: routed request plus MCP page round trip', { timeout: 2
     const state = await startProfile(name);
     evidence.startMs = Date.now() - startAt;
     assert.equal(state.phase, 'ready');
-    assert.deepEqual(state.services, { memory: 'ready', gateway: 'ready' });
+    assert.deepEqual(state.services, { memory: 'ready', dashboard: 'ready', gateway: 'ready' });
     evidence.services = state.services;
     await assertGatewayRoute(name, c, rig, evidence);
     await assertMemoryTools(name, c, stamp, evidence);

@@ -50,3 +50,19 @@ Documentacao e revisao final de seguranca.
 - claudeCli: passed
 - codexCli: partial (MCP passed; hook capture pending native trust)
 - codexDesktop: pending (requires validation inside the app)
+
+## M6: complemento de projetos externos aprovado
+
+Data: 2026-10-21. Launchers desacoplados da instalacao: cwd atual ou --dir, raiz Git/pasta e perfil base determinam memoria isolada, configuracao e quatro portas. Registro transacional aceita projetos externos; hooks validam fronteira e escopo em cada captura. CLI Codex local descoberto sem mudar PATH global. Preservados trabalho existente, motores upstream e arquivos do projeto externo.
+
+Build/lint aprovados; 81 testes, 4 E2E de regressao e 1 E2E externo aprovados, sem skips. E2E externo executou --version dos CLIs reais por launch e por launchers upstream; testou MCP e captura sintetica com motor real, isolamento e persistencia apos restart. Gateway teve saude simulada; provedor real e captura interativa nao foram testados nesta rodada. M6 e estados dos clientes continuam com os limites anteriores.
+
+Falha inicial da regressao (2/4) expôs fixture anterior ao dashboard ja existente no checkout; fixture recebeu porta independente e passou a exigir dashboard ready. Descoberta do executavel Codex e expectativa de rejeicao de sessao inexistente tambem foram corrigidas durante o teste externo. Evidencias e limites: .local/evidence/external-projects-validation.json e .local/evidence/external-projects-e2e.json. Procedimento: docs/guides/external-projects.md; decisao: ADR 0006.
+
+## M6: comandos curtos no Windows
+
+Data: 2026-10-21. Criados launchers .cmd para jev-memory, jev-memory-codex e jev-memory-claude, reutilizando os entrypoints existentes e preservando cwd. Ativador Node verifica conflitos e acrescenta somente bin ao PATH do usuario quando chamado com --persist, preservando entradas e tipo de registro, com backup local. A tentativa inicial de ativador .ps1 foi bloqueada pela politica local; o arquivo experimental foi removido e a implementacao Node nao altera essa politica.
+
+Build/lint aprovados, teste focado de PATH aprovado e E2E externo aprovado incluindo resolucao dos dois nomes em PowerShell e --version dos CLIs reais. PATH restrito aos processos de teste; persistencia do PATH do usuario ainda depende de autorizacao. Evidencia: .local/evidence/short-commands-integration.log. Os gates de captura interativa e Desktop permanecem pendentes.
+
+Ativacao dos comandos curtos (2026-10-21): autorizada e executada. Pasta bin adicionada ao PATH do usuario, preservacao exata de entradas/tipo verificada contra backup local e notificacao de ambiente confirmada. Novos terminais podem executar jev-memory-codex, jev-memory-claude e jev-memory. Evidencia: .local/evidence/short-commands-activation.json. M6 e gates de Desktop/hooks continuam com os limites registrados.

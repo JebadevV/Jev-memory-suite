@@ -12,6 +12,12 @@ test('configuration fails closed on unknown fields, secret URLs, remote HTTP and
     { ...c, gateway: { ...c.gateway, jevUrl: 'https://evil.example/v1' } }
   ]) assert.equal(configSchema.safeParse(candidate).success, false);
 });
+test('dashboard port defaults when absent and must differ from every other service port', async () => {
+  const c = configSchema.parse(await json(resolve(root, 'config/default.json')));
+  assert.equal(c.dashboard.port, 18879);
+  assert.equal(configSchema.safeParse({ ...c, dashboard: { port: c.memory.port } }).success, false);
+  assert.equal(configSchema.safeParse({ ...c, dashboard: { port: c.gateway.port } }).success, false);
+});
 test('managed paths reject traversal and symlinks', async () => {
   assert.throws(() => profileDir('../other')); assert.throws(() => inside(root, '../outside'));
   const dir = await mkdtemp(resolve(root, '.local/path-test-'));

@@ -1,4 +1,4 @@
-import { createServer } from 'node:http';
+import { createServer, type Server } from 'node:http';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { resolve } from 'node:path';
@@ -7,6 +7,7 @@ import { profileDir, readConfig, root } from './config.js';
 import { baseEnv, token, sleep } from './local.js';
 import { memoryBinary, gatewayDir, initMemory } from './install.js';
 import { createServer as netServer } from 'node:net';
+import { startDashboard } from './dashboard.js';
 
 export async function freePort(port: number): Promise<void> {
   await new Promise<void>((ok, fail) => {
@@ -19,6 +20,7 @@ async function main(name: string) {
   const secrets = [key, routerKey, process.env[c.gateway.jevKeyEnv], process.env[c.gateway.upstreamKeyEnv]].filter((s): s is string => !!s);
   const state: { phase: string; services: Record<string, string>; pid: number } = { phase: 'starting', services: {}, pid: process.pid };
   let stopping = false;
+  let dashboard: Server | undefined;
   const server = createServer((req, res) => {
     const auth = Buffer.from(req.headers.authorization ?? ''), want = Buffer.from(`Bearer ${key}`);
     if (req.headers.host !== `127.0.0.1:${c.controlPort}` || auth.length !== want.length || !timingSafeEqual(auth, want)) {
@@ -33,6 +35,7 @@ async function main(name: string) {
   });
   async function shutdown() {
     if (stopping) return; stopping = true; state.phase = 'stopping';
+    dashboard?.closeAllConnections(); dashboard?.close();
     await Promise.all([...children.values()].map(child => new Promise<void>(done => {
       if (child.exitCode !== null) return done();
       child.once('exit', () => done()); child.kill('SIGTERM');
@@ -74,11 +77,23 @@ async function main(name: string) {
     }
     throw new Error('Child health timeout');
   }
+  // Dashboard failure is reported as a service state; it must not take memory or the supervisor down.
+  async function startSuiteDashboard() {
+    try {
+      await freePort(c.dashboard.port);
+      const server = await startDashboard(name);
+      if (stopping) { server.close(); return; }
+      dashboard = server; state.services.dashboard = 'ready';
+    } catch {
+      state.services.dashboard = 'failed';
+    }
+  }
   try {
     if (c.memory.enabled) {
       await freePort(c.memory.port); await initMemory(dir);
       launch('memory', memoryBinary(), ['--data-dir', resolve(dir, 'memory'), 'serve', '--transport', 'http', '--bind', `127.0.0.1:${c.memory.port}`, '--workspace', c.workspace, '--project', c.project], baseEnv());
       await health('memory', c.memory.port, '/healthz');
+      await startSuiteDashboard();
     }
     if (c.gateway.enabled) {
       await freePort(c.gateway.port);

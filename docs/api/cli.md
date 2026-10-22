@@ -9,7 +9,7 @@ Forma de invocação: `node bin/jev-memory.mjs [--profile <nome>] <comando>`, ou
 | Opção | Padrão | Regra |
 |---|---|---|
 | `--profile <nome>` | `default` | Expressão regular `^[a-z][a-z0-9-]{0,40}$` |
-| `--dir <dir>` | `.` | Usada apenas por `launch`; caminho relativo dentro do workspace |
+| `--dir <dir>` | Pasta atual | Projeto existente, absoluto ou relativo à pasta atual; usado por launchers, registro e comandos operacionais |
 
 Tudo que vem depois de `--` é repassado sem interpretação ao cliente nativo em `launch`.
 
@@ -28,8 +28,9 @@ Tudo que vem depois de `--` é repassado sem interpretação ao cliente nativo e
 | `config <arquivo.json>` | Valida o arquivo e substitui `suite.json` atomicamente. | O arquivo precisa estar dentro do repositório e sem links. Exige perfil parado. |
 | `update gateway\|memory <sha>` | Executa `git subtree pull --prefix=<prefixo> <url> <sha> --squash`. | Exige árvore Git limpa e SHA de 40 caracteres minúsculos. Acrescenta registro em `upstream.updates.json`. Não instala nem reinicia. |
 | `mcp` | Faz handshake MCP com o AI Memory e chama `memory_status` com o workspace e o projeto do perfil. | Imprime `handshake`, `toolsCount` e o status. Exige memória habilitada e em execução. |
-| `clients install\|remove\|check claude\|codex\|desktop <dir>` | Registra, remove ou verifica MCP e hooks em um diretório do workspace. | Saída inclui `validatedInClient: false`, porque a validação dentro do cliente é separada. Veja [guia de clientes](../guides/clients.md). |
+| `clients install\|remove\|check claude\|codex\|desktop [dir]` | Registra, remove ou verifica MCP e hooks no projeto selecionado. `dir` é opcional e parte de `--dir` ou da pasta atual. | Saída inclui `validatedInClient: false`, porque a validação dentro do cliente é separada. Veja [guia de clientes](../guides/clients.md). |
 | `launch claude\|codex [--dir <dir>] -- <args>` | Executa o CLI nativo com configuração do perfil. | Exige serviços habilitados em fase `ready`. Desktop não é lançado por aqui. |
+| `[--dir <dir>] codex\|claude <args>` | Inicia a memória se necessário e executa o launcher upstream com MCP do projeto. | `--dir` deve vir antes do cliente. Projetos externos recebem perfis isolados automaticamente; veja [projetos externos](../guides/external-projects.md). |
 
 ## Erros
 

@@ -13,3 +13,5 @@ dist/
 /.claude/settings.local.json
 /.ai-memory.toml
 .jev-memory-*.json
+.secrets/
+/.claude/settings.json

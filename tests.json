@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-21T19:33:17.102Z",
+  "updatedAt": "2026-10-21T22:45:49.354Z",
   "checks": [
     {
       "id": "M0-executor",
@@ -55,6 +55,27 @@
       "command": "check-docs (30 arquivos, 0 problemas); npm audit; pnpm audit --prod; cargo audit (local); npm run build/lint/typecheck; npm test (53); npm run test:e2e (4)",
       "observed": "Documentacao completa (arquitetura+Mermaid, ADRs 0002-0005, API, guias, seguranca, runbooks, README indice). Revisao OWASP Top 10/ASVS e LGPD documentada. Correcoes: smol-toml 1.9.1, pnpm 10.34.6, router-token separado do control-token (e2e prova 401 cruzados). Residuais: esbuild low (dev), hono moderate em serveStatic nao usado, paste sem manutencao, cargo deny e cargo test --workspace nao executados, modos 0600 sem efeito no Windows.",
       "evidence": ".local/evidence/"
+    },
+    {
+      "id": "M6-external-projects-1792622215209",
+      "status": "passed",
+      "command": "npm run build; npm run lint; npm test; npm run test:e2e; npm run test:projects; local docs/link and git diff checks",
+      "observed": "Projetos externos via cwd/--dir, perfis e bancos isolados por raiz Git/pasta, portas distintas, registro preservando entradas alheias, hooks confinados ao projeto e marcador. Build/lint OK; 81 testes, 4 E2E de regressao e 1 E2E externo passaram sem skips. Codex e Claude reais executaram --version pelos launchers direto e upstream; motor real capturou payload sintetico, isolou projetos e persistiu apos restart. Saude do gateway simulada no teste externo; sem chamada ao provedor. Captura interativa Codex e Desktop continuam pendentes. projeto externo nao alterado. Falhas iniciais e correcoes registradas na evidencia.",
+      "evidence": ".local/evidence/external-projects-validation.json"
+    },
+    {
+      "id": "M6-short-commands-1792622650738",
+      "status": "passed",
+      "command": "npm run build; npm run lint; tsx --test test/shell.test.ts; npm run test:projects; node scripts/enable-shell.mjs --check",
+      "observed": "Launchers .cmd locais resolvidos por PATH em PowerShell; jev-memory-codex e jev-memory-claude executaram --version dos CLIs reais em projetos externos. Teste de preservacao de PATH/tipo de registro e idempotencia aprovado. Ativador Node nao altera politica de execucao; PATH persistente do usuario ainda pendente de autorizacao. Gateway com saude simulada; sem provedor real; Desktop e confianca de hooks continuam pendentes.",
+      "evidence": ".local/evidence/short-commands-integration.log"
+    },
+    {
+      "id": "M6-short-commands-activation-1792622749360",
+      "status": "passed",
+      "command": "node scripts/enable-shell.mjs --persist (approved); registry comparison to local backup; node scripts/enable-shell.mjs --check",
+      "observed": "Ativacao autorizada e executada: apenas D:\\Dev\\jev-memory-suite\\bin acrescentado ao PATH HKCU, valores anteriores e tipo de registro preservados, backup local e notificacao Windows confirmados. jev-memory-codex e jev-memory-claude testados no E2E real com --version em PowerShell. Sem pacote global, alteracao de politica ou configuracao dos clientes. Novos terminais recebem o PATH; gates de hooks/Desktop continuam separados.",
+      "evidence": ".local/evidence/short-commands-activation.json"
     }
   ],
   "milestones": {

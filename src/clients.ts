@@ -3,7 +3,7 @@ import { mkdir, lstat, readFile, rename, unlink, writeFile } from 'node:fs/promi
 import { dirname, relative, resolve, sep } from 'node:path';
 import { parse } from 'smol-toml';
 import { z } from 'zod';
-import { assertLocal, readConfig, root, type Config } from './config.js';
+import { assertWithin, readConfig, root, workspaceDir, type Config } from './config.js';
 import { events } from './hook.js';
 
 const clientSchema = z.enum(['claude', 'codex', 'desktop']);
@@ -65,21 +65,21 @@ function parseJsonObject(text: string): Record<string, unknown> {
   const body = text.replace(/^﻿/, '');
   return body.trim() ? object.parse(JSON.parse(body)) : {};
 }
-async function exists(path: string): Promise<boolean> {
-  await assertLocal(path);
+async function exists(path: string, boundary: string): Promise<boolean> {
+  await assertWithin(boundary, path);
   return lstat(path).then(() => true, (e: NodeJS.ErrnoException) => { if (e.code === 'ENOENT') return false; throw e; });
 }
-async function readOptional(path: string): Promise<Buffer | undefined> {
-  await assertLocal(path);
+async function readOptional(path: string, boundary: string): Promise<Buffer | undefined> {
+  await assertWithin(boundary, path);
   // A directory at a managed path cannot hold our file: the later atomic rename fails and rolls back.
   return readFile(path).catch((e: NodeJS.ErrnoException) => {
     if (e.code === 'ENOENT' || e.code === 'EISDIR') return undefined;
     throw e;
   });
 }
-async function snapshot(paths: Paths): Promise<Bytes> {
+async function snapshot(paths: Paths, boundary: string): Promise<Bytes> {
   const bytes = {} as Bytes;
-  for (const key of keys) bytes[key] = await readOptional(paths[key]);
+  for (const key of keys) bytes[key] = await readOptional(paths[key], boundary);
   return bytes;
 }
 function parseManifest(bytes: Buffer | undefined, name: string, host: Host): Manifest | undefined {
@@ -159,7 +159,7 @@ async function nextMarker(ctx: Ctx, install: boolean, marker: string): Promise<s
 }
 async function otherManifestExists(ctx: Ctx): Promise<boolean> {
   for (const host of Object.keys(manifestNames) as Host[]) {
-    if (host !== ctx.host && await exists(resolve(ctx.target, manifestNames[host]))) return true;
+    if (host !== ctx.host && await exists(resolve(ctx.target, manifestNames[host]), ctx.target)) return true;
   }
   return false;
 }
@@ -184,8 +184,8 @@ async function planChange(ctx: Ctx, install: boolean, c: Config): Promise<Op[]> 
   };
   return keys.map(key => change(key, paths[key], bytes[key], after[key])).filter(isOp);
 }
-async function writeAtomic(path: string, data: string | Buffer): Promise<void> {
-  await assertLocal(path);
+async function writeAtomic(path: string, data: string | Buffer, boundary: string): Promise<void> {
+  await assertWithin(boundary, path);
   const tmp = `${path}.${randomBytes(6).toString('hex')}.tmp`;
   try {
     await writeFile(tmp, data, { flag: 'wx', mode: 0o600 });
@@ -198,7 +198,7 @@ async function writeAtomic(path: string, data: string | Buffer): Promise<void> {
 async function backup(ctx: Ctx): Promise<string> {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const dir = resolve(ctx.target, '.local/client-backups', `${stamp}-${ctx.host}`);
-  await assertLocal(dir); await mkdir(dir, { recursive: true });
+  await assertWithin(ctx.target, dir); await mkdir(dir, { recursive: true });
   const files: Array<{ path: string; existed: boolean; backup: string | null }> = [];
   for (const [index, key] of keys.entries()) {
     const original = ctx.bytes[key], file = `file-${index}.bak`;
@@ -209,35 +209,36 @@ async function backup(ctx: Ctx): Promise<string> {
   await writeFile(resolve(dir, 'backup.json'), `${JSON.stringify(index, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
   return dir;
 }
-async function rollback(written: Op[], cause: unknown): Promise<never> {
+async function rollback(written: Op[], cause: unknown, boundary: string): Promise<never> {
   const failures: unknown[] = [];
   for (const op of [...written].reverse()) {
     try {
-      if (op.before === undefined) await unlink(op.path); else await writeAtomic(op.path, op.before);
+      await assertWithin(boundary, op.path);
+      if (op.before === undefined) await unlink(op.path); else await writeAtomic(op.path, op.before, boundary);
     } catch (error) { failures.push(error); }
   }
   if (failures.length > 0) throw new AggregateError([cause, ...failures], 'Registration failed and rollback was incomplete; restore from the backup directory');
   throw cause;
 }
-async function apply(ops: Op[]): Promise<void> {
+async function apply(ops: Op[], boundary: string): Promise<void> {
   const written: Op[] = [];
   try {
     for (const op of ops) {
+      await assertWithin(boundary, op.path);
       await mkdir(dirname(op.path), { recursive: true });
-      if (op.after === undefined) await unlink(op.path); else await writeAtomic(op.path, op.after);
+      if (op.after === undefined) await unlink(op.path); else await writeAtomic(op.path, op.after, boundary);
       written.push(op);
     }
   } catch (error) {
-    await rollback(written, error);
+    await rollback(written, error, boundary);
   }
 }
 
 export async function clients(action: string, selected: string, name: string, relativeDir: string): Promise<unknown> {
   const surface = clientSchema.parse(selected), host: Host = surface === 'claude' ? 'claude' : 'codex';
   if (!['install', 'remove', 'check'].includes(action)) throw new Error('clients action must be install, remove or check');
-  const c = await readConfig(name), target = resolve(root, relativeDir);
-  if (target !== root) await assertLocal(target);
-  const paths = managedPaths(host, target), bytes = await snapshot(paths), cur = currentState(host, name, bytes);
+  const c = await readConfig(name), target = await workspaceDir(resolve(root, relativeDir), c.projectRoot ?? root);
+  const paths = managedPaths(host, target), bytes = await snapshot(paths, target), cur = currentState(host, name, bytes);
   const base = { action, host, surface, profile: name, validatedInClient: false, nativeTrust: nativeTrust[host] };
   if (action === 'check') {
     if (!cur.previous) return { ...base, registered: false };
@@ -251,6 +252,6 @@ export async function clients(action: string, selected: string, name: string, re
   const ops = await planChange(ctx, install, c);
   if (ops.length === 0) return { ...base, changed: [] };
   const backupDir = await backup(ctx);
-  await apply(ops);
+  await apply(ops, target);
   return { ...base, backupDir, changed: ops.map(op => relPath(target, op.path)) };
 }

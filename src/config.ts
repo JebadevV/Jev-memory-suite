@@ -13,7 +13,9 @@ const envName = z.string().regex(/^JMS_[A-Z0-9_]{1,60}$/);
 export const configSchema = z.strictObject({
   schemaVersion: z.literal(1),
   workspace: profileName, project: profileName, controlPort: port,
+  projectRoot: z.string().min(1).max(4096).refine(isAbsolute, 'Project root must be absolute').optional(),
   memory: z.strictObject({ enabled: z.boolean(), port }),
+  dashboard: z.strictObject({ port }).default({ port: 18879 }),
   gateway: z.strictObject({
     enabled: z.boolean(), port,
     upstreamUrl: z.string().url(), jevUrl: z.string().url(),
@@ -21,7 +23,7 @@ export const configSchema = z.strictObject({
     upstreamKeyEnv: envName, jevKeyEnv: envName
   })
 }).superRefine((c, ctx) => {
-  if (new Set([c.controlPort, c.memory.port, c.gateway.port]).size !== 3)
+  if (new Set([c.controlPort, c.memory.port, c.gateway.port, c.dashboard.port]).size !== 4)
     ctx.addIssue({ code: 'custom', message: 'Ports must be distinct' });
   for (const value of [c.gateway.upstreamUrl, c.gateway.jevUrl]) {
     const u = new URL(value);
@@ -61,10 +63,24 @@ export async function assertLocal(path: string): Promise<void> {
   inside(base, target);
   await assertNoLinks(base, target);
 }
-export async function workspaceDir(path: string): Promise<string> {
+// Client files are confined to the explicitly selected project, not to the suite installation.
+export async function assertWithin(basePath: string, path: string): Promise<void> {
+  const base = await realpath(basePath), target = resolve(path);
+  inside(base, target);
+  await assertNoLinks(base, target);
+}
+export async function projectDirectory(path: string): Promise<string> {
   const target = resolve(path);
   if (!(await stat(target)).isDirectory()) throw new Error('Workspace path must be a directory');
-  const base = await realpath(root), canonical = await realpath(target);
+  // Reject aliases/junctions even when their real target happens to be an allowed directory.
+  const { parse } = await import('node:path');
+  await assertNoLinks(parse(target).root, target);
+  return realpath(target);
+}
+export async function workspaceDir(path: string, boundary = root): Promise<string> {
+  const target = resolve(path);
+  if (!(await stat(target)).isDirectory()) throw new Error('Workspace path must be a directory');
+  const base = await realpath(boundary), canonical = await realpath(target);
   const rel = relative(fold(base), fold(canonical));
   if (rel === '') return canonical;
   if (escapes(rel)) throw new Error('Path escapes its workspace boundary');

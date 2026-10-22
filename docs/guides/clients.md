@@ -17,7 +17,7 @@ O Codex Desktop compartilha a configuração do Codex. Passar em `clients` não 
 ## Pré-requisitos
 
 1. Perfil iniciado, com `doctor` mostrando `supervisor.phase: "ready"` e a memória habilitada.
-2. Diretório alvo dentro do workspace. Use `.` para a raiz ou um subdiretório relativo.
+2. Diretório alvo existente, inclusive fora da instalação. `.` é a pasta atual do terminal; `--dir` seleciona outra pasta. Veja [projetos externos](external-projects.md).
 3. Um marcador de escopo `.ai-memory.toml` é criado pelo registro. Sem ele, a captura de hooks fica desabilitada.
 
 ## Registrar, verificar e remover
@@ -27,6 +27,8 @@ node bin/jev-memory.mjs clients install claude .
 node bin/jev-memory.mjs clients check claude .
 node bin/jev-memory.mjs clients remove claude .
 ```
+
+Esses caminhos relativos do script pressupõem terminal na instalação. Em outro projeto, use `node C:\caminho\para\jev-memory-suite\bin\jev-memory.mjs ...`; a pasta de trabalho do cliente continua sendo o projeto atual.
 
 Troque `claude` por `codex` ou `desktop` conforme a superfície. Os comandos:
 
@@ -146,7 +148,7 @@ Atenção: os hooks globais de AI Memory do próprio usuário também vão dispa
 
 Estado: pendente. Nada aqui está aprovado até ser executado dentro do app.
 
-1. Abra a pasta `D:\Dev\jev-memory-suite\.local\fixtures\codex-cli` como projeto no app ChatGPT/Codex. O app inicia `codex app-server` com o mesmo `CODEX_HOME`. A configuração `.codex/` do projeto só é aplicada em projetos confiáveis.
+1. Abra a pasta `C:\caminho\para\jev-memory-suite\.local\fixtures\codex-cli` como projeto no app ChatGPT/Codex. O app inicia `codex app-server` com o mesmo `CODEX_HOME`. A configuração `.codex/` do projeto só é aplicada em projetos confiáveis.
 2. Aprove o projeto e os hooks dentro do próprio app.
 3. Peça ao app que chame `memory_status` no servidor `jev_memory_suite`, com workspace `jev-suite` e projeto `jev-memory-suite`.
 4. Envie um prompt com um token único.

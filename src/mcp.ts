@@ -59,7 +59,7 @@ export class Mcp {
     return z.object({ tools: z.array(z.object({ name: z.string() })) }).parse(await this.rpc('tools/list', {})).tools.map(t => t.name);
   }
   async call(name: string, args: Record<string, unknown>): Promise<unknown> {
-    if (!['memory_status', 'memory_query', 'memory_write_page', 'memory_read_page', 'memory_read_session_observations', 'memory_recent'].includes(name)) throw new Error('Suite diagnostic tool not allowed');
+    if (!['memory_status', 'memory_query', 'memory_write_page', 'memory_read_page', 'memory_read_session_observations', 'memory_recent', 'memory_briefing'].includes(name)) throw new Error('Suite diagnostic tool not allowed');
     const result = resultSchema.parse(await this.rpc('tools/call', { name, arguments: args }));
     if (result.isError) throw new Error('MCP tool returned isError');
     const text = result.content.filter(c => c.type === 'text').map(c => c.text ?? '').join('\n');

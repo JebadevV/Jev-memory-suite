@@ -11,9 +11,11 @@ O schema é estrito: campos desconhecidos são rejeitados. Todo arquivo passa po
 | `schemaVersion` | número | Exatamente `1` | `1` |
 | `workspace` | texto | `^[a-z][a-z0-9-]{0,40}$` | `jev-suite` |
 | `project` | texto | `^[a-z][a-z0-9-]{0,40}$` | `jev-memory-suite` |
+| `projectRoot` | texto opcional | Caminho absoluto, até 4096 caracteres; limita arquivos de cliente e hooks ao projeto externo registrado | Ausente no perfil base |
 | `controlPort` | inteiro | 1024 a 65535 | `18877` |
 | `memory.enabled` | booleano | — | `true` |
 | `memory.port` | inteiro | 1024 a 65535 | `49375` |
+| `dashboard.port` | inteiro | 1024 a 65535; default do schema quando ausente | `18879` |
 | `gateway.enabled` | booleano | — | `false` |
 | `gateway.port` | inteiro | 1024 a 65535 | `18878` |
 | `gateway.upstreamUrl` | URL | HTTPS, ou `http://127.0.0.1`; sem credenciais, query ou fragmento; host na allowlist | `https://api.openai.com/v1` |
@@ -24,7 +26,7 @@ O schema é estrito: campos desconhecidos são rejeitados. Todo arquivo passa po
 
 ## Regras globais
 
-- As três portas `controlPort`, `memory.port` e `gateway.port` devem ser distintas, mesmo quando um serviço estiver desabilitado.
+- As quatro portas `controlPort`, `memory.port`, `gateway.port` e `dashboard.port` devem ser distintas, mesmo quando um serviço estiver desabilitado.
 - Os endpoints são validados pela própria URL: o hostname precisa estar em `allowedHosts`, e a URL não pode conter `userinfo`, `search` ou `hash`.
 - Os valores das chaves nunca entram no arquivo. Apenas os **nomes** das variáveis de ambiente são configurados.
 

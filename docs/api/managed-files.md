@@ -73,7 +73,7 @@ Lista acrescentada por `update`. Cada item tem `engine`, `prefix`, `url`, `commi
 
 ## Arquivos de cliente no workspace
 
-Os caminhos são relativos ao diretório informado em `clients`. Para Claude, o diretório é o próprio workspace ou um subdiretório.
+Os caminhos são relativos ao diretório informado em `clients`, que pode estar fora da instalação. O perfil externo guarda `projectRoot` e todas as operações ficam confinadas ao projeto selecionado; veja [projetos externos](../guides/external-projects.md).
 
 | Host | Arquivo de configuração | Arquivo de hooks | Marcador | Manifesto |
 |---|---|---|---|---|
