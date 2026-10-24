@@ -1,4 +1,4 @@
-// Suite dashboard: AI Memory panel plus the embedded Jev Gateway dashboard, served on loopback only.
+// Suite dashboard: AI Memory panel and the upstream gateway aggregator frame, served on loopback only.
 // Purpose: maintainers and operators. Date: 2026-10-22.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -10,6 +10,11 @@ import { Mcp } from './mcp.js';
 import { listProjects, type ProjectEntry } from './dashboard-projects.js';
 import { dashboardHtml } from './dashboard-page.js';
 import { dashboardJs } from './dashboard-script.js';
+import { createHistoryReader, historyFile } from './gateway-history.js';
+import {
+  emptySnapshot, gatewaySnapshot, upstreamGateways,
+  type Aggregator, type GatewaySnapshot, type GatewaySnapshotOptions,
+} from './gateways.js';
 
 const MAX_RECENT = 5;
 const MAX_TEXT = 120;
@@ -24,7 +29,6 @@ const FEED_MERGED_LIMIT = 30;
 const ONLINE_TIMEOUT_MS = 2000;
 // Same shape the hook writes; anything else is treated as no active session.
 const SESSION_ID_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
-export const GATEWAY_DASHBOARD_URL = 'http://localhost:8790/dashboard';
 
 // Optional blocks may be absent in older engines; the panel shows a dash instead of failing.
 const briefingSchema = z.object({
@@ -94,7 +98,7 @@ export function mergeProjectFeeds(feeds: { project: ProjectEntry; items: FeedIte
 }
 
 export interface DashboardOptions {
-  port: number; gatewayDashboardUrl: string;
+  port: number; gateways: () => Promise<GatewaySnapshot>;
   projects: () => Promise<ProjectEntry[]>;
   // Undefined selects the current suite profile; any other id must come from `projects`.
   summary: (projectId?: string) => Promise<unknown>;
@@ -108,12 +112,30 @@ function withTimeout<T>(work: () => Promise<T>, ms: number): Promise<T> {
   return Promise.race([new Promise<T>(ok => ok(work())), limit]).finally(() => clearTimeout(timer));
 }
 
-// Frame sources cover both loopback spellings of the gateway origin.
-function frameSources(url: string): string {
-  const base = new URL(url), alias = new URL(url);
-  alias.hostname = base.hostname === 'localhost' ? '127.0.0.1' : base.hostname === '127.0.0.1' ? 'localhost' : base.hostname;
-  return [...new Set([base.origin, alias.origin])].join(' ');
+const GATEWAY_TTL_MS = 5000;
+// Only the aggregator's own loopback origins may be framed; with no aggregator nothing may be.
+const frameSources = (aggregator?: Aggregator): string => (aggregator ? aggregator.origins.join(' ') : "'none'");
+const contentSecurityPolicy = (aggregator?: Aggregator): string =>
+  `default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; frame-src ${frameSources(aggregator)}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
+
+// One load at a time. A failed load is answered as an empty snapshot and cached like a success, so a broken check is not retried on every request.
+function cachedSnapshots(load: () => Promise<GatewaySnapshot>): () => Promise<GatewaySnapshot> {
+  let cached: { at: number; value: GatewaySnapshot } | undefined;
+  let inflight: Promise<GatewaySnapshot> | undefined;
+  const refresh = (): Promise<GatewaySnapshot> => new Promise<GatewaySnapshot>(ok => ok(load()))
+    .catch(() => {
+      process.stderr.write('dashboard: gateway status unavailable\n');
+      return emptySnapshot();
+    })
+    .then(value => { cached = { at: Date.now(), value }; return value; })
+    .finally(() => { inflight = undefined; });
+  return () => {
+    if (cached && Date.now() - cached.at < GATEWAY_TTL_MS) return Promise.resolve(cached.value);
+    inflight ??= refresh();
+    return inflight;
+  };
 }
+
 const HEADERS = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' };
 const TYPES = { html: 'text/html; charset=utf-8', js: 'text/javascript; charset=utf-8', json: 'application/json; charset=utf-8', text: 'text/plain; charset=utf-8' };
 const OFFLINE_BODY = JSON.stringify({ ok: false, error: 'memory offline' });
@@ -122,8 +144,7 @@ const UNKNOWN_PROJECT_BODY = JSON.stringify({ ok: false, error: 'unknown project
 export function dashboardHandler(opts: DashboardOptions): (req: IncomingMessage, res: ServerResponse) => void {
   // Exact Host match blocks DNS rebinding; a missing Host is rejected too.
   const hosts = new Set([`127.0.0.1:${opts.port}`, `localhost:${opts.port}`]);
-  const csp = `default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; frame-src ${frameSources(opts.gatewayDashboardUrl)}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
-  const html = dashboardHtml(opts.gatewayDashboardUrl);
+  const gatewaysOf = cachedSnapshots(opts.gateways);
   const send = (res: ServerResponse, status: number, type: string, body: string, extra: Record<string, string> = {}): void => {
     res.writeHead(status, { ...HEADERS, 'content-type': type, ...extra }).end(body);
   };
@@ -177,6 +198,17 @@ export function dashboardHandler(opts: DashboardOptions): (req: IncomingMessage,
     const feeds = await Promise.all(targets.map(async project => ({ project, items: await feedOf(project.id) })));
     return send(res, 200, TYPES.json, JSON.stringify({ ok: true, items: mergeProjectFeeds(feeds) }));
   }
+  // The page is built per request from the cached snapshot, so its frame and CSP always match the aggregator it names.
+  async function indexRoute(res: ServerResponse): Promise<void> {
+    const { aggregator } = await gatewaysOf();
+    return send(res, 200, TYPES.html, dashboardHtml(aggregator ?? null), { 'content-security-policy': contentSecurityPolicy(aggregator) });
+  }
+  // Only the aggregator's client and port are exposed; its URL and origins stay server-side.
+  async function gatewaysRoute(res: ServerResponse): Promise<void> {
+    const { aggregator, ...snapshot } = await gatewaysOf();
+    const exposed = aggregator ? { client: aggregator.client, port: aggregator.port } : null;
+    return send(res, 200, TYPES.json, JSON.stringify({ ok: true, ...snapshot, aggregator: exposed }));
+  }
   async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!hosts.has(req.headers.host ?? '')) return send(res, 403, TYPES.text, 'Forbidden');
     if (req.method !== 'GET') return send(res, 405, TYPES.text, 'Method Not Allowed', { allow: 'GET' });
@@ -184,7 +216,8 @@ export function dashboardHandler(opts: DashboardOptions): (req: IncomingMessage,
     const path = cut < 0 ? raw : raw.slice(0, cut);
     const params = new URLSearchParams(cut < 0 ? '' : raw.slice(cut + 1));
     switch (path) {
-      case '/': return send(res, 200, TYPES.html, html, { 'content-security-policy': csp });
+      case '/': return indexRoute(res);
+      case '/gateways/status': return gatewaysRoute(res);
       case '/app.js': return send(res, 200, TYPES.js, dashboardJs);
       case '/memory/projects': return projectsRoute(res);
       case '/memory/summary': return summaryRoute(res, params);
@@ -207,8 +240,9 @@ async function readActiveSession(name: string): Promise<string | null> {
 interface ProjectState { mcp?: Mcp; summary?: { at: number; value: MemorySummary }; feed?: { at: number; value: MemoryFeed } }
 
 // The supervisor owns this server: each project keeps one MCP session, rebuilt after a failure, and its summary and feed are cached briefly.
+// Gateway prices and experiment modes are read from the suite config once at start; the history readers live as long as the server.
 export async function startDashboard(name: string): Promise<Server> {
-  const { dashboard } = await readConfig(name);
+  const { dashboard, observability, gatewayExperiment } = await readConfig(name);
   // State exists only for ids the listing returned; the handler validates ids before they reach these functions.
   const states = new Map<string, ProjectState>();
   const stateOf = (id: string): ProjectState => {
@@ -252,7 +286,15 @@ export async function startDashboard(name: string): Promise<Server> {
       throw e;
     }
   };
-  const handler = dashboardHandler({ port: dashboard.port, gatewayDashboardUrl: GATEWAY_DASHBOARD_URL, projects: () => listProjects(name), summary, feed });
+  const readers = { claude: createHistoryReader(historyFile('claude')), codex: createHistoryReader(historyFile('codex')) };
+  const gatewayOptions: GatewaySnapshotOptions = {
+    pricing: { models: observability.pricing.models, jev: observability.pricing.jev },
+    experiment: gatewayExperiment,
+    history: { claude: () => readers.claude.refresh(), codex: () => readers.codex.refresh() },
+  };
+  // The gateways are the ports the upstream launchers use, read from the supervisor environment on each check.
+  const gateways = async (): Promise<GatewaySnapshot> => gatewaySnapshot(await upstreamGateways(), gatewayOptions);
+  const handler = dashboardHandler({ port: dashboard.port, gateways, projects: () => listProjects(name), summary, feed });
   const server = createServer(handler);
   await new Promise<void>((ok, fail) => { server.once('error', fail); server.listen(dashboard.port, '127.0.0.1', ok); });
   return server;

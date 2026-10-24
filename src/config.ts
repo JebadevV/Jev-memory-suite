@@ -10,20 +10,47 @@ export const root = existsSync(resolve(moduleDir, '../package.json'))
 export const profileName = z.string().regex(/^[a-z][a-z0-9-]{0,40}$/);
 const port = z.number().int().min(1024).max(65535);
 const envName = z.string().regex(/^JMS_[A-Z0-9_]{1,60}$/);
+const experimentMode = z.enum(['default', 'shadow', 'metering']).default('default');
+const perMTok = z.number().finite().min(0).max(10000);
+const priceMeta = { currency: z.literal('USD'), source: z.string().min(1).max(200), verifiedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) };
+// No default prices: an unconfigured price must stay unknown so the dashboard shows "not configured" instead of invented numbers.
+export const llmPriceSchema = z.strictObject({
+  inputPerMTok: perMTok, cacheReadPerMTok: perMTok, cacheWritePerMTok: perMTok, outputPerMTok: perMTok, ...priceMeta
+});
+export const jevPriceSchema = z.strictObject({ inputPerMTok: perMTok, outputPerMTok: perMTok, ...priceMeta });
+export const modelName = z.string().regex(/^[A-Za-z0-9._:\/@-]{1,80}$/);
 export const configSchema = z.strictObject({
   schemaVersion: z.literal(1),
   workspace: profileName, project: profileName, controlPort: port,
   projectRoot: z.string().min(1).max(4096).refine(isAbsolute, 'Project root must be absolute').optional(),
-  memory: z.strictObject({ enabled: z.boolean(), port }),
+  memory: z.strictObject({ enabled: z.boolean(), port, semanticSearch: z.boolean().default(true) }),
+  // Profiles that predate these keys parse with the defaults below, so existing suite.json files stay valid.
   dashboard: z.strictObject({ port }).default({ port: 18879 }),
+  gatewayExperiment: z.strictObject({ claude: experimentMode, codex: experimentMode }).default({ claude: 'default', codex: 'default' }),
+  observability: z.strictObject({
+    pricing: z.strictObject({
+      models: z.record(modelName, llmPriceSchema).default({}).refine(m => Object.keys(m).length <= 100, 'At most 100 priced models'),
+      jev: jevPriceSchema.optional(),
+    }).default({ models: {} }),
+  }).default({ pricing: { models: {} } }),
   gateway: z.strictObject({
     enabled: z.boolean(), port,
     upstreamUrl: z.string().url(), jevUrl: z.string().url(),
     allowedHosts: z.array(z.string().regex(/^[a-z0-9.-]+$/)).min(1).max(16),
     upstreamKeyEnv: envName, jevKeyEnv: envName
-  })
+  }),
+  // Optional Headroom proxy; the pinned version keeps detection from accepting an unvalidated release.
+  headroom: z.strictObject({
+    enabled: z.boolean().default(false),
+    port: port.default(18880),
+    version: z.string().regex(/^\d+\.\d+\.\d+$/).default('0.41.0'),
+    executable: z.string().min(1).max(4096).refine(isAbsolute, 'Headroom executable must be absolute').optional(),
+    // Routes Codex ChatGPT-login traffic through the Jev codex gateway; needs the patched Headroom shim for the pinned version.
+    codex: z.boolean().default(false),
+    python: z.string().min(1).max(4096).refine(isAbsolute, 'Headroom python must be absolute').optional(),
+  }).default({ enabled: false, port: 18880, version: '0.41.0', codex: false }),
 }).superRefine((c, ctx) => {
-  if (new Set([c.controlPort, c.memory.port, c.gateway.port, c.dashboard.port]).size !== 4)
+  if (new Set([c.controlPort, c.memory.port, c.gateway.port, c.dashboard.port, c.headroom.port]).size !== 5)
     ctx.addIssue({ code: 'custom', message: 'Ports must be distinct' });
   for (const value of [c.gateway.upstreamUrl, c.gateway.jevUrl]) {
     const u = new URL(value);

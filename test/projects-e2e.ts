@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { projectContext } from '../src/projects.js';
-import { prepare, readConfig, root } from '../src/config.js';
+import { prepare, profileDir, readConfig, root } from '../src/config.js';
 import { stop } from '../src/lifecycle.js';
 import { Mcp } from '../src/mcp.js';
 import { nativeHook } from '../src/hook.js';
@@ -45,10 +45,19 @@ async function shortCommand(cwd: string, command: 'jev-memory-codex' | 'jev-memo
 
 test('external projects: real CLI, independent memory processes, hooks, isolation and restart', { timeout: 240_000 }, async t => {
   const scratch = await mkdtemp(resolve(tmpdir(), 'jev-suite-external-e2e-'));
+  const created: string[] = []; // Profiles this run allocated; the cleanup below removes only these.
+  // Each profile is stopped before its folder is deleted; a profile that will not stop is kept.
+  t.after(async () => {
+    for (const name of created) {
+      await stop(name);
+      await rm(profileDir(name), { recursive: true, force: true, maxRetries: 5 });
+    }
+    await rm(scratch, { recursive: true, force: true, maxRetries: 5 });
+  });
   const a = resolve(scratch, 'A with spaces'), b = resolve(scratch, 'B');
   await mkdir(a); await mkdir(b);
-  const ca = await projectContext('default', '.', a), cb = await projectContext('default', '.', b);
-  t.after(async () => { await stop(ca.name); await stop(cb.name); });
+  const ca = await projectContext('default', '.', a); created.push(ca.name);
+  const cb = await projectContext('default', '.', b); created.push(cb.name);
   const ac = await readConfig(ca.name), bc = await readConfig(cb.name);
   for (const cwd of [a, b]) {
     await cli(cwd, ['clients', 'install', 'claude']);
@@ -99,7 +108,7 @@ test('external projects: real CLI, independent memory processes, hooks, isolatio
     checks: ['CLI from external cwd with spaces', 'workspace-scoped client registration', 'two real memory services', 'native CLI versions through launch and upstream jev launchers', 'Windows short commands resolved through PATH in PowerShell',
       'real native hook capture', 'cross-project session/page isolation', 'wrong-project hook rejection', 'capture persists after restart'],
     limitations: ['Hook events were submitted by the integration test, not by an interactive native client', 'Codex hook trust and Desktop remain separate pending checks', 'Upstream launcher used a synthetic gateway health response; no model-provider requests were made'],
-    cleanup: 'Services stopped by test cleanup; fixtures, synthetic memory and evidence retained' };
+    cleanup: 'Services stopped, then test profiles and scratch projects removed by test cleanup; evidence retained' };
   await prepare(resolve(root, '.local/evidence'));
   await writeFile(resolve(root, '.local/evidence/external-projects-e2e.json'), `${JSON.stringify(evidence, null, 2)}\n`);
 });

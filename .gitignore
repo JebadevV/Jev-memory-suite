@@ -11,6 +11,8 @@ dist/
 /.codex/config.toml
 /.codex/hooks.json
 /.claude/settings.local.json
+/.agents/hooks.json
+__pycache__/
 /.ai-memory.toml
 .jev-memory-*.json
 .secrets/

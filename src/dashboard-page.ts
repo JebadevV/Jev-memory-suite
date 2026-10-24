@@ -1,11 +1,94 @@
 // Markup and panel script for the suite dashboard. Purpose: AI Memory panel plus the embedded Jev Gateway dashboard.
-// Audience: maintainers. Date: 2026-10-21.
+// Audience: maintainers. Date: 2026-10-22.
 import { dashboardCss } from './dashboard-style.js';
+import type { Aggregator } from './gateways.js';
 
 const escapeHtml = (value: string): string =>
   value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-export function dashboardHtml(gatewayUrl: string): string {
+// Both clients render in the one aggregator frame; data-aggregator lets the script detect a changed gateway.
+const gatewayFrame = (aggregator: Aggregator): string =>
+  `<iframe class="gateway-frame gateway-tall" id="gateway-slot" data-aggregator="${escapeHtml(`${aggregator.client}:${aggregator.port}`)}" title="Dashboard do Jev Gateway (Claude + Codex)" src="${escapeHtml(aggregator.url)}" sandbox="allow-scripts allow-same-origin"></iframe>`;
+
+const gatewayFallback = (): string => `<section class="card gateway-offline" id="gateway-slot" data-aggregator="none" aria-labelledby="gateway-offline-title">
+  <h2 id="gateway-offline-title">Gateways offline</h2>
+  <p>Claude e Codex não estão respondendo nas portas configuradas.</p>
+  <p>Inicie um dos launchers: <code>jev-memory-codex</code> ou <code>jev-memory-claude</code>; cada um sobe o gateway correspondente.</p>
+  <p class="meta">Esta página confere o status sozinha a cada poucos segundos.</p>
+</section>`;
+
+// Exactly one gateway frame: the aggregator already shows both clients, so a second frame would repeat its view.
+const gatewayPanel = (aggregator: Aggregator | null): string => `<div class="gateway-head"><h2>Jev Gateway · Claude + Codex</h2></div>
+${aggregator ? gatewayFrame(aggregator) : gatewayFallback()}`;
+
+// Column headers of the per-model table; the script fills one row per model (max 12) in the matching order.
+const MODEL_COLUMNS: readonly string[] = ['Modelo', 'Requisições', 'Chamadas Jev', 'Tokens entrada Jev', 'LLM não cacheada',
+  'Cache leitura', 'LLM saída', 'Custo est. (USD)'];
+
+// History values only: the launcher log, which the upstream window does not keep. Keys match the script's OBS_ROW_KEYS.
+const OBS_ROWS: readonly (readonly [string, string])[] = [
+  ['requests', 'Requisições'],
+  ['jevCalls', 'Chamadas Jev (erros)'],
+  ['jevInput', 'Tokens entrada Jev'],
+  ['jevOutput', 'Tokens saída Jev'],
+  ['llmInput', 'LLM entrada não cacheada'],
+  ['cacheRead', 'Cache leitura'],
+  ['cacheWrite', 'Cache escrita'],
+  ['llmOutput', 'LLM saída (raciocínio)'],
+  ['blocking', 'Latência adicionada pelo Jev (total)'],
+  ['avoided', 'Chamadas LLM evitadas (direct)'],
+  ['cost', 'Custo estimado (USD)'],
+  ['period', 'Período'],
+];
+
+const modelTable = (scope: string, label: string): string => `<div class="gw-table-wrap">
+      <table class="gw-table gw-models" aria-label="${escapeHtml(`Modelos do ${label} no histórico`)}">
+        <thead><tr>${MODEL_COLUMNS.map((column) => `<th scope="col">${column}</th>`).join('')}</tr></thead>
+        <tbody id="obs-${scope}-models-body"></tbody>
+      </table>
+    </div>
+    <p class="empty" id="obs-${scope}-models-empty" hidden></p>`;
+
+// Compare rows are filled by the script: request count, per-request averages and cache share, with and without Jev.
+const compareTable = (scope: string, label: string): string => `<div class="gw-table-wrap">
+      <table class="gw-table gw-compare" aria-label="${escapeHtml(`Comparação com e sem Jev do ${label}`)}">
+        <thead><tr><th scope="col">Métrica</th><th scope="col">Com Jev</th><th scope="col">Baseline</th><th scope="col">Diferença</th></tr></thead>
+        <tbody id="obs-${scope}-compare-body"></tbody>
+      </table>
+    </div>
+    <p class="meta" id="obs-${scope}-compare-note"></p>`;
+
+const obsCard = (scope: string, label: string, wide: boolean): string => `<article class="card gw-card s-idle${wide ? ' gw-wide' : ''}" id="obs-${scope}" aria-labelledby="obs-${scope}-name">
+    <div class="gw-head">
+      <h3 class="who" id="obs-${scope}-name">${label}</h3>
+      <div class="state" id="obs-${scope}-state">Carregando</div>
+      <p class="why" id="obs-${scope}-why"></p>
+      <p class="why">Experimento: <span id="obs-${scope}-experiment">—</span></p>
+    </div>
+    <dl class="gw-metrics">
+      ${OBS_ROWS.map(([key, text]) => `<div><dt>${text}</dt><dd id="obs-${scope}-${key}">—</dd></div>`).join('\n      ')}
+    </dl>
+    <h4 class="gw-sub">Por modelo</h4>
+    ${modelTable(scope, label)}
+    <h4 class="gw-sub">Com Jev × Baseline (histórico)</h4>
+    ${compareTable(scope, label)}
+  </article>`;
+
+const observabilitySection = `<section class="card gw-section" id="token-observability" aria-labelledby="obs-title">
+  <h2 id="obs-title">Observabilidade de tokens (histórico do log)</h2>
+  <p class="meta gw-note">Complementa o painel do Jev Gateway abaixo: totais do log completo do launcher, por modelo, e custo estimado. A janela recente, filtros e o controle de roteamento ficam no painel original.</p>
+  <p class="empty" id="gateway-notice" role="status" hidden>O gateway mudou desde que esta página foi carregada. Recarregue a página para ver o painel atualizado.</p>
+  <p class="meta gw-stale" id="obs-stale" hidden>dados desatualizados</p>
+  <div class="gw-grid">
+    ${obsCard('claude', 'Claude', false)}
+    ${obsCard('codex', 'Codex', false)}
+    ${obsCard('combined', 'Combinado (Claude + Codex)', true)}
+  </div>
+  <p class="meta gw-disclaimer">Custos são estimativas de preço de API com base nos preços configurados em observability.pricing; não representam cobrança de assinatura nem economia confirmada. Tokens de saída do Jev não são registrados pelo gateway.</p>
+  <p class="meta" id="gw-pricing">Carregando preços…</p>
+</section>`;
+
+export function dashboardHtml(aggregator: Aggregator | null): string {
   return `<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -78,14 +161,14 @@ export function dashboardHtml(gatewayUrl: string): string {
   <ol class="recent" id="recent"></ol>
   <p class="empty" id="recent-empty" hidden></p>
 </section>
+
+${observabilitySection}
 </main>
 
-<div class="gateway-head"><h2>Jev Gateway</h2></div>
-<iframe class="gateway-frame" title="Dashboard do Jev Gateway" src="${escapeHtml(gatewayUrl)}" sandbox="allow-scripts allow-same-origin"></iframe>
+${gatewayPanel(aggregator)}
 <div class="toasts" id="toasts" aria-live="polite"></div>
 <script src="/app.js" defer></script>
 </body>
 </html>
 `;
 }
-

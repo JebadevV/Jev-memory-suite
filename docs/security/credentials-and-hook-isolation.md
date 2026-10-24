@@ -1,6 +1,6 @@
 # Credenciais e isolamento de hooks
 
-Propósito: listar onde cada segredo fica, quem o lê e como o processo de hooks e os filhos são isolados. Público: mantenedores e operadores. Data: 2026-10-21.
+Propósito: listar onde cada segredo fica, quem o lê e como o processo de hooks e os filhos são isolados. Público: mantenedores e operadores. Data: 2026-10-23.
 
 Este documento descreve locais e regras. Não contém valores de segredos, e os comandos de exemplo não devem ser executados com conteúdo de arquivos de segredo colado em chats, issues ou commits.
 
@@ -45,11 +45,12 @@ A redação é por padrão e não é exaustiva. Segredos em outros formatos pode
 ## Isolamento dos hooks
 
 1. Os hooks são executados com `dist/src/hook.js`, que valida o payload antes de ler a configuração ou o token.
-2. `transcript_path` é removido, e o hook não lê transcrições.
+2. `transcript_path`, `agent_transcript_path` e `last_assistant_message` são removidos, e o hook não lê transcrições nem envia o texto final do assistente ao motor.
 3. O `cwd` precisa estar dentro do workspace. Links e junctions são recusados.
 4. O processo `ai-memory hook` roda com `--capture-mode allowlist`. Sem marcador `.ai-memory.toml` nos ancestrais, nada é capturado.
 5. O hook não recebe segredos de provedor. Ele só fala com o AI Memory do próprio perfil, em loopback.
 6. Limites de tempo (20 s) e de saída (256 KiB) encerram processos que se comportam mal.
+7. No Antigravity CLI, o hook só processa payloads do diretório de artefatos da CLI, remove `transcriptPath` sem lê-lo e sempre sai com 0 (falha aberta, sem bloquear a ferramenta). Os diagnósticos não têm conteúdo. Detalhes em [hooks e bridge](../api/hooks-and-bridge.md#antigravity-cli-agy).
 
 Detalhes em [ADR 0004](../architecture/adr/0004-hook-boundary-and-capture-allowlist.md) e [hooks e bridge](../api/hooks-and-bridge.md).
 
@@ -59,6 +60,9 @@ Detalhes em [ADR 0004](../architecture/adr/0004-hook-boundary-and-capture-allowl
 - **Dados entre clientes do mesmo perfil.** Claude, Codex e Desktop compartilham a mesma memória do perfil, por desenho.
 - **Hooks globais do AI Memory.** Se o usuário tiver uma instalação global, seus hooks podem ler `.ai-memory.toml`. A suíte não controla esses hooks.
 - **Processos da mesma conta de usuário.** Qualquer processo da conta pode ler os arquivos de segredo, porque o Windows não aplica os modos POSIX.
+- **Repositórios com `.agents/hooks.json`.** O agy carrega esse arquivo de qualquer repositório, sem prompt de confiança, e executa seus comandos. É comportamento do upstream; a suíte não controla (T33).
+- **Entrada MCP global do agy.** `~/.gemini/config/mcp_config.json` é compartilhado por todos os projetos do usuário. O isolamento depende de `workspace` e `project` explícitos em cada chamada (T36).
+- **Hooks globais do Antigravity.** `~/.gemini/config/hooks.json`, compartilhado com IDE e App, não é alterado pela suíte e não é controlado por ela.
 
 ## Operação segura
 

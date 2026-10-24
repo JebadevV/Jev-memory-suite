@@ -9,7 +9,8 @@
   "bin": {
     "jev-memory": "bin/jev-memory.mjs",
     "jev-memory-codex": "bin/jev-memory-codex.mjs",
-    "jev-memory-claude": "bin/jev-memory-claude.mjs"
+    "jev-memory-claude": "bin/jev-memory-claude.mjs",
+    "jev-memory-agy": "bin/jev-memory-agy.mjs"
   },
   "scripts": {
     "build": "tsc",
@@ -18,7 +19,12 @@
     "test": "tsx --test test/*.test.ts",
     "suite": "node bin/jev-memory.mjs",
     "test:e2e": "tsx --test --test-concurrency=1 test/e2e.ts",
-    "test:projects": "tsx --test --test-concurrency=1 test/projects-e2e.ts"
+    "test:projects": "tsx --test --test-concurrency=1 test/projects-e2e.ts",
+    "test:semantic": "tsx --test --test-concurrency=1 test/semantic-e2e.ts",
+    "test:headroom": "tsx --test --test-concurrency=1 test/headroom-e2e.ts",
+    "test:headroom-codex": "tsx --test --test-concurrency=1 test/headroom-codex-e2e.ts",
+    "test:claude-launch": "tsx --test --test-concurrency=1 test/claude-launch-e2e.ts",
+    "test:codex-launch": "tsx --test --test-concurrency=1 test/codex-launch-e2e.ts"
   },
   "dependencies": {
     "smol-toml": "1.9.1",

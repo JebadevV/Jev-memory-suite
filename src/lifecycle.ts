@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { access, readFile, writeFile } from 'node:fs/promises';
-import { configSchema, json, prepare, profileDir, readConfig, root } from './config.js';
+import { configSchema, json, prepare, profileDir, readConfig, root, type Config } from './config.js';
 import { atomicJson, baseEnv, sleep, token } from './local.js';
 import { memoryBinary, gatewayDir, readPointerSync } from './install.js';
+import { isConnectionRefused, probeGateway, upstreamGateways, type GatewayProbe, type UpstreamClient, type UpstreamGateway } from './gateways.js';
+import { detectHeadroom, detectHeadroomPython } from './headroom.js';
 
 // Trees come from the pointer only; a corrupt pointer reports null instead of hiding the other fields.
 function engineTrees(): { memory: string | null; gateway: string | null } {
@@ -34,9 +36,6 @@ export async function control(name: string, action: 'status' | 'stop'): Promise<
 export type SupervisorState = 'running' | 'stopped' | 'foreign';
 // 401/403 means the port answers, but not with our token: another profile or process owns it.
 const FOREIGN_STATUSES = new Set([401, 403]);
-function isConnectionRefused(e: unknown): boolean {
-  return e instanceof TypeError && !!e.cause && (e.cause as NodeJS.ErrnoException).code === 'ECONNREFUSED';
-}
 async function foreignPortError(name: string): Promise<Error> {
   const { controlPort } = await readConfig(name);
   return new Error(`Control port ${controlPort} is used by another supervisor or process; change controlPort with: jev-memory --profile ${name} config <file>`);
@@ -74,6 +73,8 @@ export async function start(name: string): Promise<Record<string, unknown>> {
   await prepare(resolve(dir, 'logs')); await prepare(resolve(root, '.local/tmp'));
   const env = baseEnv();
   for (const k of [c.gateway.upstreamKeyEnv, c.gateway.jevKeyEnv]) if (process.env[k]) env[k] = process.env[k];
+  // The dashboard must show the ports the launchers use; only usable overrides are passed on.
+  for (const gateway of await upstreamGateways()) if (process.env[gateway.portEnv] !== undefined && gateway.portValid) env[gateway.portEnv] = String(gateway.port);
   const { open } = await import('node:fs/promises');
   const log = await open(resolve(dir, 'logs/supervisor.log'), 'a');
   const child = spawn(process.execPath, [resolve(root, 'dist/src/supervisor.js'), name], {
@@ -121,8 +122,39 @@ async function supervisorReport(name: string): Promise<Record<string, unknown>> 
   if (state === 'foreign') return { phase: 'port-conflict', controlPort: (await readConfig(name)).controlPort };
   return { phase: 'stopped' };
 }
-export async function doctor(name: string): Promise<unknown> {
+export type GatewayProbeFn = (origin: string) => Promise<GatewayProbe>;
+export interface GatewayReport extends GatewayProbe { portEnv: string; port: number; portValid: boolean; source: UpstreamGateway['source'] }
+// Upstream gateways are probed read-only; nothing is started or stopped here.
+async function gatewayReports(env: NodeJS.ProcessEnv, probe: GatewayProbeFn): Promise<Record<UpstreamClient, GatewayReport>> {
+  const reports = await Promise.all((await upstreamGateways(env)).map(async gateway => {
+    const { client, portEnv, port, portValid, source, origin } = gateway;
+    return [client, { portEnv, port, portValid, source, ...(await probe(origin)) }] as const;
+  }));
+  return Object.fromEntries(reports) as Record<UpstreamClient, GatewayReport>;
+}
+// Profile ports equal to an upstream gateway port would collide at launch; their names are reported.
+function portConflicts(c: Config, gateways: Record<UpstreamClient, GatewayReport>): string[] {
+  const taken = new Set(Object.values(gateways).map(gateway => gateway.port));
+  const profile: Record<string, number> = { controlPort: c.controlPort, 'memory.port': c.memory.port, 'gateway.port': c.gateway.port, 'dashboard.port': c.dashboard.port, 'headroom.port': c.headroom.port };
+  return Object.keys(profile).filter(key => taken.has(profile[key] ?? -1));
+}
+// Detection runs only for an enabled profile; a failed check is reported as a reason, never thrown.
+async function headroomReport(c: Config, supervisor: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const services = supervisor.services as Record<string, unknown> | undefined;
+  const headroomState = supervisor.headroom as { codex?: boolean } | undefined;
+  const detected = c.headroom.enabled ? await detectHeadroom(c).catch(() => ({ ok: false, reason: 'Headroom check failed' })) : null;
+  // Codex detection reads the local interpreter and shim files only; it contacts nothing.
+  const python = c.headroom.enabled && c.headroom.codex ? await detectHeadroomPython(c).catch(() => ({ ok: false, reason: 'Headroom python check failed' })) : null;
+  return {
+    enabled: c.headroom.enabled, port: c.headroom.port, version: c.headroom.version, detected,
+    state: services?.headroom ?? 'stopped', reason: supervisor.headroomReason,
+    codex: { enabled: c.headroom.codex, python, active: headroomState?.codex ?? false, reason: supervisor.headroomCodexReason }
+  };
+}
+export async function doctor(name: string, env: NodeJS.ProcessEnv = process.env, probe: GatewayProbeFn = probeGateway): Promise<unknown> {
   const c = await readConfig(name);
+  const gateways = await gatewayReports(env, probe);
+  const supervisor = await supervisorReport(name);
   const installedAt = async (resolvePath: () => string) => {
     try { await access(resolvePath()); return true; }
     catch { return false; }
@@ -136,7 +168,10 @@ export async function doctor(name: string): Promise<unknown> {
     engines: engineTrees(),
     enabled: { memory: c.memory.enabled, gateway: c.gateway.enabled },
     credentials: { upstreamPresent: !!process.env[c.gateway.upstreamKeyEnv], jevPresent: !!process.env[c.gateway.jevKeyEnv] },
-    supervisor: await supervisorReport(name),
+    supervisor,
+    headroom: await headroomReport(c, supervisor),
+    gateways,
+    conflicts: portConflicts(c, gateways),
     trust: 'Codex hooks require native trust review; Desktop verification is separate',
     retainedToken: await readFile(resolve(profileDir(name), 'control-token')).then(() => true, () => false),
     retainedRouterToken: await readFile(resolve(profileDir(name), 'router-token')).then(() => true, () => false)

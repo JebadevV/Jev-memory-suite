@@ -1,6 +1,6 @@
 # Segurança
 
-Propósito: índice da documentação de segurança, com o estado do gate de revisão e as fronteiras que ele cobre. Público: mantenedores e revisores. Data: 2026-10-21.
+Propósito: índice da documentação de segurança, com o estado do gate de revisão e as fronteiras que ele cobre. Público: mantenedores e revisores. Data: 2026-10-22.
 
 ## Estado do gate
 
@@ -27,6 +27,8 @@ Regras que valem durante a revisão:
 - A suíte não cifra os dados em repouso.
 - Retenção é indefinida por padrão. Sem política definida pelo operador, a memória cresce sem limite.
 - Exclusão de memória é destrutiva e não é automatizada pela suíte.
-- Provedores de LLM e embeddings ficam desligados (`embedding_provider = "none"`). Com o Gateway habilitado, o conteúdo das requisições vai aos provedores configurados.
+- Embeddings são locais (`embedding_provider = "local"`, desligável com `memory.semanticSearch = false`). A suíte não configura provedor externo de embeddings. Com o Gateway habilitado, o conteúdo das requisições vai aos provedores configurados.
+- O modelo de embeddings é verificado por sha256 antes do uso. Ver [modelo de ameaças](threat-model.md) (T20 e T21).
+- A migração do histórico copia dados pessoais da instalação original para o perfil da suíte, na mesma máquina. Backups e staging da migração contêm tokens locais. Ver [LGPD](lgpd.md#migração-do-histórico) e [guia de migração](../guides/migration.md).
 - A chave de roteador dada aos clientes é separada do token de controle do supervisor (corrigido neste conjunto de alterações; veja [modelo de ameaças](threat-model.md#achados-corrigidos)).
 - Ferramentas homônimas de outros servidores MCP globais podem ser escolhidas pelo modelo (T19). Nomeie `jev_memory_suite` nos prompts.

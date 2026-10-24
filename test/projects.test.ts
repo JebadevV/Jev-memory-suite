@@ -27,8 +27,8 @@ test('external projects retain cwd, isolate profiles, preserve client settings a
   assert.equal((await projectContext('default', '.', sub)).name, ca.name);
   const ac = await readConfig(ca.name), bc = await readConfig(cb.name);
   assert.equal(ac.projectRoot, ca.cwd); assert.notEqual(ac.project, bc.project);
-  assert.equal(new Set([ac.controlPort, ac.memory.port, ac.gateway.port, ac.dashboard.port,
-    bc.controlPort, bc.memory.port, bc.gateway.port, bc.dashboard.port]).size, 8);
+  assert.equal(new Set([ac.controlPort, ac.memory.port, ac.gateway.port, ac.dashboard.port, ac.headroom.port,
+    bc.controlPort, bc.memory.port, bc.gateway.port, bc.dashboard.port, bc.headroom.port]).size, 10);
   await assert.rejects(assertLocal(resolve(a, 'foreign')), /boundary/);
   await assert.rejects(assertWithin(a, resolve(b, 'foreign')), /boundary/);
   const other = { command: 'existing-server', args: ['keep-me'] };

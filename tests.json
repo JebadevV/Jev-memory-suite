@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-21T22:45:49.354Z",
+  "updatedAt": "2026-10-23T18:00:00.000Z",
   "checks": [
     {
       "id": "M0-executor",
@@ -76,6 +76,810 @@
       "command": "node scripts/enable-shell.mjs --persist (approved); registry comparison to local backup; node scripts/enable-shell.mjs --check",
       "observed": "Ativacao autorizada e executada: apenas D:\\Dev\\jev-memory-suite\\bin acrescentado ao PATH HKCU, valores anteriores e tipo de registro preservados, backup local e notificacao Windows confirmados. jev-memory-codex e jev-memory-claude testados no E2E real com --version em PowerShell. Sem pacote global, alteracao de politica ou configuracao dos clientes. Novos terminais recebem o PATH; gates de hooks/Desktop continuam separados.",
       "evidence": ".local/evidence/short-commands-activation.json"
+    },
+    {
+      "id": "G0-baseline-typecheck",
+      "scope": "baseline",
+      "status": "passed",
+      "command": "npm run typecheck",
+      "passed": 1,
+      "failed": 0,
+      "observed": "tsc --noEmit sem erros",
+      "evidence": "saida do terminal 2026-10-22"
+    },
+    {
+      "id": "G0-baseline-lint",
+      "scope": "baseline",
+      "status": "passed",
+      "command": "npm run lint",
+      "passed": 1,
+      "failed": 0,
+      "observed": "eslint sem erros",
+      "evidence": "saida do terminal 2026-10-22"
+    },
+    {
+      "id": "G0-baseline-unit",
+      "scope": "baseline",
+      "status": "partial",
+      "command": "npm test",
+      "passed": 111,
+      "failed": 3,
+      "observed": "3 falhas preexistentes em test/launch.test.ts: fixture sob a raiz encontra .ai-memory.toml do repo",
+      "evidence": "saida do terminal 2026-10-22"
+    },
+    {
+      "id": "G1-unit",
+      "scope": "unit models/install/config",
+      "status": "passed",
+      "command": "npm test",
+      "passed": 127,
+      "failed": 3,
+      "observed": "130 testes; 16 novos passam; 3 falhas preexistentes de launch.test.ts",
+      "evidence": "saida do terminal 2026-10-22"
+    },
+    {
+      "id": "G1-semantic-e2e",
+      "scope": "integracao semantica+lexical+persistencia+localidade",
+      "status": "passed",
+      "command": "npm run test:semantic",
+      "passed": 1,
+      "failed": 0,
+      "observed": "login: auth top-1 com embeddings, 0 hits sem; top-1 apos restart; lexical ok; TCP remoto so loopback",
+      "evidence": ".local/evidence/semantic-e2e.json"
+    },
+    {
+      "id": "G1-live-default",
+      "scope": "perfil default real",
+      "status": "passed",
+      "command": "node bin/jev-memory.mjs restart",
+      "passed": 1,
+      "failed": 0,
+      "observed": "embedder local enabled; backfill embedded=9 failed=0; Get-NetTCPConnection so 127.0.0.1",
+      "evidence": ".local/profiles/default/logs/memory.log"
+    },
+    {
+      "id": "G1-typecheck-lint-build",
+      "scope": "estatico",
+      "status": "passed",
+      "command": "npm run typecheck && npm run lint && npm run build",
+      "passed": 3,
+      "failed": 0,
+      "observed": "sem erros",
+      "evidence": "saida do terminal 2026-10-22"
+    },
+    {
+      "id": "G2-unit",
+      "scope": "unit hook/clients",
+      "status": "passed",
+      "command": "npm test",
+      "passed": 142,
+      "failed": 3,
+      "observed": "145 testes; 15 novos passam; 3 falhas preexistentes de launch.test.ts",
+      "evidence": "saida do terminal 2026-10-22"
+    },
+    {
+      "id": "G2-live-hooks",
+      "scope": "integracao hook.js + motor real",
+      "status": "passed",
+      "command": "node scratchpad/fire.mjs <sid> (9 eventos + 6 subagentes paralelos)",
+      "passed": 15,
+      "failed": 0,
+      "observed": "exit 0, stdout {}, 15 observacoes na sessao, sem texto do assistente nem transcript_path; codex subagent-start rejeitado",
+      "evidence": ".local/profiles/default/memory/db (sessao 6ABDFAAE...)"
+    },
+    {
+      "id": "G2-clients-install",
+      "scope": "configuracao Claude",
+      "status": "passed",
+      "command": "node bin/jev-memory.mjs clients install claude (2x) && clients check claude",
+      "passed": 3,
+      "failed": 0,
+      "observed": "9 eventos registrados; segunda instalacao changed=[]",
+      "evidence": ".local/client-backups/2026-10-22T15-04-01-609Z-claude"
+    },
+    {
+      "id": "G2-interactive",
+      "scope": "Claude Code interativo",
+      "status": "pending",
+      "command": "nova sessao claude no repo",
+      "passed": 0,
+      "failed": 0,
+      "observed": "hooks carregados so no inicio do processo; nao executado nesta sessao",
+      "evidence": ""
+    },
+    {
+      "id": "G3-unit",
+      "scope": "migracao com fixtures (dry-run, idempotencia, conflitos, rollback, fonte inalterada)",
+      "status": "passed",
+      "command": "npx tsx --test test/migrate.test.ts",
+      "passed": 12,
+      "failed": 0,
+      "observed": "12/12",
+      "evidence": "saida do executor 2026-10-22"
+    },
+    {
+      "id": "G3-spool-staging",
+      "scope": "drenagem do spool em copia",
+      "status": "passed",
+      "command": "ai-memory --data-dir .local/tmp/migration-staging recover --json",
+      "passed": 1200,
+      "failed": 2,
+      "observed": "sent 1200, dropped 2 pelo motor, remaining 0",
+      "evidence": ".local/tmp/migration-staging/serve.err"
+    },
+    {
+      "id": "G3-dryrun",
+      "scope": "dry-run real",
+      "status": "passed",
+      "command": "node bin/jev-memory.mjs migrate-history --from .local/tmp/migration-staging",
+      "passed": 1,
+      "failed": 0,
+      "observed": "sem escrita; plano 26 paginas/39 sessoes/3917 obs; 8 sessoes em dobro como conflito",
+      "evidence": ".local/tmp/dryrun.json"
+    },
+    {
+      "id": "G3-apply",
+      "scope": "apply real",
+      "status": "passed",
+      "command": "node bin/jev-memory.mjs migrate-history --from .local/tmp/migration-staging --apply",
+      "passed": 1,
+      "failed": 0,
+      "observed": "validation ok: integrity, FK 0, contagens, 26/26 hashes, FTS; 44 arquivos wiki",
+      "evidence": ".local/evidence/migration-2026-10-22T15-19-42-350Z-apply.json"
+    },
+    {
+      "id": "G3-idempotency",
+      "scope": "reexecucao",
+      "status": "passed",
+      "command": "migrate-history --apply (2a vez)",
+      "passed": 1,
+      "failed": 0,
+      "observed": "0 inseridos, 0 arquivos criados",
+      "evidence": ".local/evidence/migration-2026-10-22T15-19-50-683Z-apply.json"
+    },
+    {
+      "id": "G3-original-preserved",
+      "scope": "preservacao da fonte",
+      "status": "passed",
+      "command": "sha256sum %LOCALAPPDATA%/ai-memory/db/memory.sqlite",
+      "passed": 1,
+      "failed": 0,
+      "observed": "0a50d6b7... igual ao backup",
+      "evidence": ".local/backups/2026-10-22-gaps/SHA256SUMS"
+    },
+    {
+      "id": "G3-retrieval",
+      "scope": "recuperacao MCP pos-migracao + embeddings",
+      "status": "passed",
+      "command": "memory_status/memory_query (explain, global)",
+      "passed": 3,
+      "failed": 0,
+      "observed": "33/33 paginas com vetor; hits migrados com stream vector; global retorna sessoes de 2026-10-21",
+      "evidence": ".local/profiles/default/logs/memory.log"
+    },
+    {
+      "id": "G5-unit",
+      "scope": "unit completo",
+      "status": "partial",
+      "command": "npm test",
+      "passed": 154,
+      "failed": 3,
+      "observed": "3 falhas preexistentes launch.test.ts",
+      "evidence": "saida do terminal"
+    },
+    {
+      "id": "G5-e2e",
+      "scope": "gateway+memoria E2E",
+      "status": "partial",
+      "command": "npm run test:e2e",
+      "passed": 3,
+      "failed": 1,
+      "observed": "falha both-disabled: registro de cliente do perfil default na raiz (preexistente)",
+      "evidence": "saida do terminal"
+    },
+    {
+      "id": "G5-projects",
+      "scope": "projetos externos E2E",
+      "status": "passed",
+      "command": "npm run test:projects",
+      "passed": 1,
+      "failed": 0,
+      "observed": "ok",
+      "evidence": ".local/evidence/external-projects-e2e.json"
+    },
+    {
+      "id": "G5-semantic",
+      "scope": "semantico E2E",
+      "status": "passed",
+      "command": "npm run test:semantic",
+      "passed": 1,
+      "failed": 0,
+      "observed": "ok",
+      "evidence": ".local/evidence/semantic-e2e.json"
+    },
+    {
+      "id": "G5-mcp-doctor",
+      "scope": "MCP e doctor",
+      "status": "passed",
+      "command": "node bin/jev-memory.mjs mcp && doctor",
+      "passed": 2,
+      "failed": 0,
+      "observed": "handshake, 24 ferramentas, servicos ready",
+      "evidence": "saida do terminal"
+    },
+    {
+      "id": "G5-subcommands",
+      "scope": "CLI do motor",
+      "status": "passed",
+      "command": "ai-memory <cmd> --help para cada comando",
+      "passed": 67,
+      "failed": 0,
+      "observed": "68 comandos (help sem flag), 41 aninhados; motor c146869 inalterado",
+      "evidence": "saida do terminal"
+    },
+    {
+      "id": "G6-doc-links",
+      "scope": "documentacao",
+      "status": "passed",
+      "command": "node scratchpad/check-links.mjs <md alterados>",
+      "passed": 159,
+      "failed": 0,
+      "observed": "24 arquivos, 0 links quebrados",
+      "evidence": "saida do terminal"
+    },
+    {
+      "id": "G7-security",
+      "scope": "auditoria de seguranca das alteracoes",
+      "status": "passed",
+      "command": "npm audit --omit=dev; revisao manual de SQL/caminhos/hooks; grep de segredos no diff",
+      "passed": 3,
+      "failed": 0,
+      "observed": "0 vulnerabilidades; SQL parametrizado; sem segredos",
+      "evidence": "progress.md Fase 7"
+    },
+    {
+      "id": "S1-red",
+      "scope": "unit hook (antes da correcao)",
+      "status": "passed",
+      "command": "npx tsx --test test/hook.test.ts",
+      "passed": 34,
+      "failed": 2,
+      "observed": "RED esperado: 2 testes de aceitacao de agent_type vazio falham com agent_type:too_small",
+      "evidence": "saida do terminal 2026-10-22"
+    },
+    {
+      "id": "S1-unit",
+      "scope": "unit hook",
+      "status": "passed",
+      "command": "npx tsx --test test/hook.test.ts",
+      "passed": 36,
+      "failed": 0,
+      "observed": "payload real de SubagentStop aceito; ausente, null, numerico e 201 caracteres rejeitados",
+      "evidence": "saida do terminal 2026-10-22"
+    },
+    {
+      "id": "S1-suite",
+      "scope": "unit completo + typecheck + lint + build",
+      "status": "partial",
+      "command": "npm test; npm run typecheck; npm run lint; npm run build",
+      "passed": 158,
+      "failed": 3,
+      "observed": "161 testes; 3 falhas preexistentes de launch.test.ts, inalteradas; typecheck, lint e build ok",
+      "evidence": "saida do terminal 2026-10-22"
+    },
+    {
+      "id": "S1-e2e",
+      "scope": "E2E processos reais (perfis isolados)",
+      "status": "partial",
+      "command": "npm run test:e2e",
+      "passed": 3,
+      "failed": 1,
+      "observed": "mesma falha preexistente 'both disabled' (ownRootRegistration); hook nativo do caso memory only aprovado",
+      "evidence": "saida do terminal 2026-10-22"
+    },
+    {
+      "id": "S1-live-subagent",
+      "scope": "Claude Code real (sessao ja aberta)",
+      "status": "partial",
+      "command": "subagentes reais antes e depois de npm run build",
+      "passed": 1,
+      "failed": 0,
+      "observed": "2 rejeicoes reproduzidas antes do build; nenhuma depois; observacao de subagente gravada; sessao nova pendente",
+      "evidence": ".local/profiles/default/logs/hook-errors.log"
+    },
+    {
+      "id": "S1-secret-scan",
+      "scope": "credencial do Codex (P0-1)",
+      "status": "failed",
+      "command": "varredura por bytes sem imprimir valores",
+      "passed": 0,
+      "failed": 1,
+      "observed": "ausente dos stores e logs do AI Memory; presente em backups de config do Codex, thread_history do Codex, backup local da suite e transcript da sessao; rotacao pendente do usuario",
+      "evidence": "progress.md, Marco de estabilizacao 1"
+    },
+    {
+      "id": "S2-migrate-unit",
+      "scope": "unit migracao (escopo e guarda de handoffs)",
+      "status": "passed",
+      "command": "npx tsx --test test/migrate.test.ts",
+      "passed": 18,
+      "failed": 0,
+      "observed": "18/18: 12 anteriores + 6 novos",
+      "evidence": "saida do terminal 2026-10-22"
+    },
+    {
+      "id": "S2-hook-bridge-clients-unit",
+      "scope": "unit hook, bridge e clientes",
+      "status": "passed",
+      "command": "npx tsx --test test/hook.test.ts; npx tsx --test test/clients.test.ts; npx tsx --test test/bridge.test.ts",
+      "passed": 59,
+      "failed": 0,
+      "observed": "hook 39/39; clients 15/15; bridge 5/5 (novo)",
+      "evidence": "saida do terminal 2026-10-22"
+    },
+    {
+      "id": "S2-suite",
+      "scope": "unit completo + typecheck + lint + build",
+      "status": "partial",
+      "command": "npm test; npm run typecheck; npm run lint; npm run build",
+      "passed": 174,
+      "failed": 3,
+      "observed": "177 testes; 3 falhas preexistentes de launch.test.ts, inalteradas; typecheck, lint e build ok",
+      "evidence": "saida do terminal 2026-10-22"
+    },
+    {
+      "id": "S2-e2e",
+      "scope": "E2E processos reais (perfis isolados)",
+      "status": "partial",
+      "command": "npm run test:e2e",
+      "passed": 3,
+      "failed": 1,
+      "observed": "mesma falha preexistente 'both disabled' (ownRootRegistration)",
+      "evidence": "saida do terminal 2026-10-22"
+    },
+    {
+      "id": "S2-projects",
+      "scope": "E2E projetos externos",
+      "status": "passed",
+      "command": "npm run test:projects",
+      "passed": 1,
+      "failed": 0,
+      "observed": "1/1",
+      "evidence": "saida do terminal 2026-10-22"
+    },
+    {
+      "id": "S2-semantic",
+      "scope": "E2E busca semantica",
+      "status": "passed",
+      "command": "npm run test:semantic",
+      "passed": 1,
+      "failed": 0,
+      "observed": "1/1",
+      "evidence": "saida do terminal 2026-10-22"
+    },
+    {
+      "id": "S2-scope-reconcile-suite",
+      "scope": "reconciliacao do jev-memory-suite (move-session do motor)",
+      "status": "passed",
+      "command": "ai-memory move-session --from-project jev-memory-suite --from-workspace default --to jev-memory-suite --to-workspace jev-suite --force --confirm (dry-run antes: 18/18)",
+      "passed": 1,
+      "failed": 0,
+      "observed": "jev-suite/jev-memory-suite com 38 sessoes, 28 paginas, 25 handoffs, 3344 observacoes; totais do store preservados (56/39/35); integridade ok; checkpoint c97da6dd; 1794 ingest_keys no id antigo (sem conteudo)",
+      "evidence": "progress.md, Marco de estabilizacao 2"
+    },
+    {
+      "id": "S2-farol-migration",
+      "scope": "migracao com escopo para o perfil do Farol",
+      "status": "passed",
+      "command": "migrate-history --project jev-suite/p-farol-platform-b9b5f26bfe6b2ceb49cb; migrate-history --project default/jebadevv-thenoblehub --as jev-suite/p-farol-platform-b9b5f26bfe6b2ceb49cb; reexecucao das duas",
+      "passed": 1,
+      "failed": 0,
+      "observed": "inseridos 2+5 sessoes, 1005+847 observacoes, 4 paginas, 4 handoffs; validacao ok; fonte inalterada; 0 handoffs excluidos; reexecucao 0 inseridos; store do Farol 12 sessoes, 1864 observacoes",
+      "evidence": ".local/backups/migration-2026-10-22T16-47-37-641Z/ e .local/backups/migration-2026-10-22T16-47-38-323Z/"
+    },
+    {
+      "id": "S2-isolation-audit",
+      "scope": "auditoria de contaminacao entre escopos",
+      "status": "passed",
+      "command": "ai-memory audit-contamination (stores default e Farol)",
+      "passed": 1,
+      "failed": 0,
+      "observed": "0 achados nos stores default e Farol apos a reconciliacao",
+      "evidence": "progress.md, Marco de estabilizacao 2"
+    },
+    {
+      "id": "S2-mcp-session",
+      "scope": "bridge com sessao do Claude (resolved_by no memory_status)",
+      "status": "passed",
+      "command": "memory_status pelo cliente Claude apos clients install claude; bridge.js <perfil> claude-code",
+      "passed": 1,
+      "failed": 0,
+      "observed": "resolved_by=session com a bridge; antes shared_slot; id desconhecido default_after_mismatch; id invalido cai no fallback sem sessao",
+      "evidence": "progress.md, Marco de estabilizacao 2"
+    },
+    {
+      "id": "S2-claude-fresh-session",
+      "scope": "Claude Code em sessao nova (claude -p --model haiku, projeto descartavel)",
+      "status": "partial",
+      "command": "claude -p --model haiku no projeto descartavel registrado (perfil project-6ba92a7197ddf0f80818)",
+      "passed": 1,
+      "failed": 0,
+      "observed": "resolved_by=session echo=probe-ok subagent=pong; session-start 1, user-prompt 2, pre-tool-use 5, post-tool-use 4, stop 2, outros 2, session-end 1; sem hook-errors nem hook-skips; PreCompact e TUI interativa nao exercitados",
+      "evidence": "progress.md, Marco de estabilizacao 2"
+    },
+    {
+      "id": "S2-codex-registration",
+      "scope": "registro do Codex no projeto Farol",
+      "status": "partial",
+      "command": "clients install codex D:\\Dev\\the-noble-dev\\farol-platform; hooks/list nativo (app-server, somente leitura)",
+      "passed": 1,
+      "failed": 0,
+      "observed": "7 eventos; 5 hooks anteriores trusted com mesmo hash; PreCompact e Stop untrusted ate revisao em /hooks (acao do usuario); SessionEnd com timeout limitado a 3 s pelo Codex",
+      "evidence": ".local/client-backups/2026-10-22T16-48-15-539Z-codex (projeto Farol)"
+    },
+    {
+      "id": "S2-codex-real-events",
+      "scope": "eventos reais do Codex CLI (captura por hooks)",
+      "status": "passed",
+      "command": "codex exec -s read-only --dangerously-bypass-hook-trust (Farol, stdin fechado)",
+      "passed": 6,
+      "failed": 0,
+      "observed": "apos corrigir o comando (& no PowerShell): session-start, user-prompt, pre-tool-use x2, post-tool-use x2, stop, session-end capturados no store do Farol; sessao encerrada; sem hook-errors/hook-skips; sem vazamento para o default; PreCompact nao exercitado; revisao /hooks pendente do usuario",
+      "evidence": ".local/profiles/project-b9b5f26bfe6b2ceb49cb/memory/db (sessao 01a164bd...)"
+    },
+    {
+      "id": "S2-codex-desktop",
+      "scope": "Codex Desktop (validacao dentro do app)",
+      "status": "pending",
+      "command": "validacao dentro do app Codex Desktop",
+      "passed": 0,
+      "failed": 0,
+      "observed": "nao validado",
+      "evidence": ""
+    },
+    {
+      "id": "S2-codex-hook-command",
+      "scope": "Codex CLI Windows hook command",
+      "status": "passed",
+      "command": "npx tsx --test test/clients.test.ts",
+      "passed": 18,
+      "failed": 0,
+      "observed": "codex/win32 usa operador de chamada &; claude inalterado",
+      "evidence": "saida do terminal 2026-10-22"
+    },
+    {
+      "id": "S3-unit",
+      "scope": "unit completo apos isolamento de testes",
+      "status": "passed",
+      "command": "npm test",
+      "passed": 197,
+      "failed": 0,
+      "observed": "197/197",
+      "evidence": "progress.md, Marco de estabilizacao 3"
+    },
+    {
+      "id": "S3-e2e",
+      "scope": "E2E processos reais (perfis isolados e removidos ao final)",
+      "status": "passed",
+      "command": "npm run test:e2e",
+      "passed": 4,
+      "failed": 0,
+      "observed": "4/4, incluindo o caso both disabled corrigido pelo isolamento de fixtures",
+      "evidence": "progress.md, Marco de estabilizacao 3"
+    },
+    {
+      "id": "S3-projects",
+      "scope": "E2E projetos externos",
+      "status": "passed",
+      "command": "npm run test:projects",
+      "passed": 1,
+      "failed": 0,
+      "observed": "1/1",
+      "evidence": "progress.md, Marco de estabilizacao 3"
+    },
+    {
+      "id": "S3-semantic",
+      "scope": "E2E busca semantica",
+      "status": "passed",
+      "command": "npm run test:semantic",
+      "passed": 1,
+      "failed": 0,
+      "observed": "1/1",
+      "evidence": "progress.md, Marco de estabilizacao 3"
+    },
+    {
+      "id": "S3-lint-typecheck-build",
+      "scope": "estatico e build",
+      "status": "passed",
+      "command": "npm run typecheck; npm run lint; npm run build",
+      "passed": 3,
+      "failed": 0,
+      "observed": "typecheck, lint e build sem erros",
+      "evidence": "saida do terminal 2026-10-22"
+    },
+    {
+      "id": "S3-audit",
+      "scope": "dependencias de producao",
+      "status": "passed",
+      "command": "npm audit --omit=dev",
+      "passed": 1,
+      "failed": 0,
+      "observed": "0 vulnerabilidades",
+      "evidence": "saida do terminal 2026-10-22"
+    },
+    {
+      "id": "S3-gateway-doctor",
+      "scope": "gateways upstream no doctor (ADR 0009)",
+      "status": "passed",
+      "command": "node bin/jev-memory.mjs doctor; com JEV_CODEX_PORT=19790 doctor",
+      "passed": 1,
+      "failed": 0,
+      "observed": "claude 8789 running (pid, upstream https://api.anthropic.com/v1); codex 8790 running (upstream https://chatgpt.com/backend-api/codex); conflicts []; com JEV_CODEX_PORT=19790, codex porta 19790 stopped",
+      "evidence": "progress.md, Marco de estabilizacao 3, A"
+    },
+    {
+      "id": "S3-supervisor-recovery",
+      "scope": "reinicio limitado do supervisor em perfil descartavel (ADR 0009)",
+      "status": "passed",
+      "command": "kill em ai-memory serve, quatro vezes, em perfil descartavel; start apos failed",
+      "passed": 1,
+      "failed": 0,
+      "observed": "restarting em ~0,5 s, starting ~1,3 s, ready ~2,0 s (restarts 1); kills 2 e 3 recuperados (restarts 2 e 3); 4o kill levou a failed e o supervisor encerrou; start depois voltou a ready",
+      "evidence": "progress.md, Marco de estabilizacao 3, B"
+    },
+    {
+      "id": "S3-dashboard-ports",
+      "scope": "painel sem porta fixa e portas repassadas ao supervisor",
+      "status": "passed",
+      "command": "revisao de src/dashboard.ts, src/dashboard-page.ts e src/lifecycle.ts; npm test",
+      "passed": 1,
+      "failed": 0,
+      "observed": "um iframe por cliente a partir de upstreamGateways(); CSP frame-src restrita as origens dos dois gateways; start repassa JEV_CODEX_PORT e JEV_CLAUDE_PORT somente quando validos",
+      "evidence": "progress.md, Marco de estabilizacao 3, A"
+    },
+    {
+      "id": "S3-test-isolation",
+      "scope": "isolamento de testes e vazamento de perfis",
+      "status": "passed",
+      "command": "contagem de .local/profiles antes e depois de npm test, test:e2e, test:projects e test:semantic",
+      "passed": 1,
+      "failed": 0,
+      "observed": "perfis 213 antes e 213 depois; 4 falhas pre-existentes corrigidas por projectRoot temporario fora do repositorio; perfis de testes antigos mantidos (exige aprovacao)",
+      "evidence": "progress.md, Marco de estabilizacao 3, C"
+    },
+    {
+      "id": "S3-powershell-regression",
+      "scope": "regressao do comando de hook do Codex no PowerShell (win32)",
+      "status": "passed",
+      "command": "npx tsx --test test/clients.test.ts (teste win32 que executa o comando gerado com powershell.exe -Command)",
+      "passed": 1,
+      "failed": 0,
+      "observed": "hook.js inicia com o comando gerado; falha sem o prefixo '& ' (verificado)",
+      "evidence": "progress.md, Marco de estabilizacao 3, D"
+    },
+    {
+      "id": "S3-claude-precompact",
+      "scope": "evento PreCompact do Claude Code em sessao real",
+      "status": "passed",
+      "command": "MSYS_NO_PATHCONV=1 claude -p --resume <sessao> \"/compact\"",
+      "passed": 1,
+      "failed": 0,
+      "observed": "observacao de pre-compact capturada; sem hook-errors nem hook-skips. Com isso, os 9 eventos do Claude tem captura verificada em sessao real; TUI interativa nao exercitada",
+      "evidence": "progress.md, Marco de estabilizacao 3, D"
+    },
+    {
+      "id": "S3-hook-latency",
+      "scope": "latencia de hooks e memoria dos processos (medicao, sem otimizacao)",
+      "status": "passed",
+      "command": "dist/src/hook.js no perfil project-6ba92a7197ddf0f80818: 10 post-tool-use sequenciais, 6 pre-tool-use em paralelo, session-start, session-end; jev-memory start ate ready",
+      "passed": 1,
+      "failed": 0,
+      "observed": "start ate ready 775 ms; post-tool-use 160-198 ms; session-start 228 ms; session-end 1098 ms (abaixo de 3 s); 6 pre-tool-use em paralelo 221 ms; todos exit 0; ai-memory serve 143,7 MB e supervisor 106 MB",
+      "evidence": "progress.md, Marco de estabilizacao 3, D"
+    },
+    {
+      "id": "S3-codex-native-trust",
+      "scope": "confianca nativa dos 7 hooks do Codex no Farol (hooks/list, somente leitura)",
+      "status": "pending",
+      "command": "hooks/list nativo do app-server (somente leitura) apos clients install codex no Farol",
+      "passed": 0,
+      "failed": 0,
+      "observed": "7 hooks do jev-memory-suite modified/untrusted apos a correcao do PowerShell (hash mudou); revisao em /hooks pendente do usuario",
+      "evidence": "progress.md, Marco de estabilizacao 3, E"
+    },
+    {
+      "id": "S3-codex-cli-normal-trust",
+      "scope": "Codex CLI com confianca normal, sem bypass, no projeto Farol",
+      "status": "pending",
+      "command": "checklist em docs/guides/clients.md (node bin/jev-memory.mjs codex na pasta do Farol, sem --dangerously-bypass-hook-trust)",
+      "passed": 0,
+      "failed": 0,
+      "observed": "pendente: revisao e aprovacao dos 7 hooks em /hooks e execucao com token unico",
+      "evidence": ""
+    },
+    {
+      "id": "S3-codex-desktop",
+      "scope": "Codex Desktop (validacao dentro do app)",
+      "status": "pending",
+      "command": "checklist manual de aceitacao em docs/guides/clients.md",
+      "passed": 0,
+      "failed": 0,
+      "observed": "UNVERIFIED: nada do Desktop foi validado; depende de execucao do operador dentro do app",
+      "evidence": ""
+    },
+    {
+      "id": "D1-dashboard-unit",
+      "scope": "painel unificado: CSP, Host, rotas, cache e pagina (test/dashboard.test.ts)",
+      "status": "passed",
+      "command": "npx tsx --test test/dashboard.test.ts",
+      "passed": 39,
+      "failed": 0,
+      "observed": "39/39",
+      "evidence": "progress.md, Painel unificado Jev Gateway + AI Memory, D"
+    },
+    {
+      "id": "D1-gateways-unit",
+      "scope": "sondagem de gateways, validacao de /dashboard/events e agregador (test/gateways.test.ts)",
+      "status": "passed",
+      "command": "npx tsx --test test/gateways.test.ts",
+      "passed": 35,
+      "failed": 0,
+      "observed": "35/35",
+      "evidence": "progress.md, Painel unificado Jev Gateway + AI Memory, D"
+    },
+    {
+      "id": "D1-suite",
+      "scope": "suite completa de testes unitarios e de integracao local",
+      "status": "passed",
+      "command": "npm test",
+      "passed": 229,
+      "failed": 0,
+      "observed": "229/229 (antes 197/197)",
+      "evidence": "progress.md, Painel unificado Jev Gateway + AI Memory, D"
+    },
+    {
+      "id": "D1-e2e",
+      "scope": "processos reais: supervisor, memoria, gateway, hook nativo e Jev simulado",
+      "status": "passed",
+      "command": "npm run test:e2e",
+      "passed": 4,
+      "failed": 0,
+      "observed": "4/4",
+      "evidence": "progress.md, Painel unificado Jev Gateway + AI Memory, D"
+    },
+    {
+      "id": "D1-live-dashboard",
+      "scope": "painel ao vivo em perfil descartavel com gateways reais (claude 8789, codex 8790)",
+      "status": "passed",
+      "command": "GET / (um iframe, frame-src e data-aggregator), GET /gateways/status, Host invalido, inspecao do corpo por segredos",
+      "passed": 1,
+      "failed": 0,
+      "observed": "um iframe src=http://localhost:8790/dashboard?peers=8789, data-aggregator=codex:8790; frame-src somente as origens de loopback do codex; status com os dois gateways running e metrics ok; Host invalido 403; corpo sem key=, Bearer, URL de upstream ou pid",
+      "evidence": "progress.md, Painel unificado Jev Gateway + AI Memory, C"
+    },
+    {
+      "id": "D1-browser-visual",
+      "scope": "painel no navegador (Chrome DevTools, contexto isolado)",
+      "status": "passed",
+      "command": "navegacao ao painel; inspecao de DOM, iframe e console",
+      "passed": 1,
+      "failed": 0,
+      "observed": "paineis de memoria integros; secao de gateways preenchida para claude e codex; iframe unico renderizou a pagina do upstream com codex :8790 e claude :8789 e filtro por cliente; zero erros e zero avisos no console",
+      "evidence": "progress.md, Painel unificado Jev Gateway + AI Memory, C"
+    },
+    {
+      "id": "D1-fallback-scenarios",
+      "scope": "cenarios de falha: somente Claude, somente Codex, os dois parados, portas customizadas, timeouts, respostas malformadas ou acima do limite, protecao de segredos",
+      "status": "passed",
+      "command": "testes unitarios em test/gateways.test.ts e test/dashboard.test.ts",
+      "passed": 1,
+      "failed": 0,
+      "observed": "cobertura unitaria apenas; nao reproduzido ao vivo para nao parar os gateways do usuario",
+      "evidence": "progress.md, Painel unificado Jev Gateway + AI Memory, C"
+    },
+    {
+      "id": "N1-embedded-dashboard",
+      "scope": "painel original incorporado: um unico iframe do agregador, CSP frame-src restrita, sem erros de console e sem rolagem horizontal",
+      "status": "passed",
+      "command": "validacao ao vivo no Chrome (DevTools, contexto isolado) com gateways reais 8789 e 8790",
+      "observed": "1 iframe src=http://localhost:8790/dashboard?peers=8789 data-aggregator=codex:8790; pagina original renderizada dentro do iframe; zero erros de console; sem rolagem horizontal",
+      "evidence": "progress.md, secao Correcao: painel original restaurado (2026-10-22)"
+    },
+    {
+      "id": "N2-legacy-redirect-upstream",
+      "scope": "(retirado) redirecionamento da pagina legada pelo patch JEV_DASHBOARD_REDIRECT",
+      "status": "not-applicable",
+      "command": "curl/GET nas paginas diretas :8790/dashboard e :8789/dashboard",
+      "observed": "patch retirado; upstream/ limpo; paginas diretas respondem 200 sem redirecionamento",
+      "evidence": "progress.md, secao Correcao: painel original restaurado (2026-10-22)"
+    },
+    {
+      "id": "N3-routing-toggle-csrf",
+      "scope": "(retirado) POST /gateways/routing da suite com CSRF e limite de chamadas",
+      "status": "not-applicable",
+      "command": "nao aplicavel: rota removida",
+      "observed": "rota removida; o interruptor de roteamento fica na pagina original do gateway, sob a politica do upstream",
+      "evidence": "docs/security/threat-model.md (T31 retirada)"
+    },
+    {
+      "id": "N4-token-observability",
+      "scope": "medicao de tokens a partir dos logs do launcher com metadados apenas: entrada do Jev, cache, modos, motivos e latencia; chamadas evitadas",
+      "status": "passed",
+      "command": "auditoria dos logs ~/.jev-gateway (somente metadados)",
+      "observed": "304,6 M tokens de entrada do Jev em 14.505 chamadas; 0 chamadas evitadas; sem periodo de referencia; tabela por modelo medida minutos depois, com o log ainda crescendo (progress.md, secao C)",
+      "evidence": ".local/evidence/jev-token-audit-2026-10-22.json; .local/evidence/jev-token-metrics-2026-10-22.txt"
+    },
+    {
+      "id": "N5-per-model-metrics",
+      "scope": "metricas por modelo com chave sentModel ?? model e custo estimado que fica nulo sem preco configurado",
+      "status": "passed",
+      "command": "testes unitarios em test/gateways.test.ts e test/gateway-metrics.test.ts",
+      "observed": "testes unitarios; custo combinado nulo quando um modelo com chamadas nao tem preco",
+      "evidence": "src/gateway-metrics.ts; test/gateways.test.ts"
+    },
+    {
+      "id": "N6-legacy-parity",
+      "scope": "paridade com a pagina legada: a pagina original incorporada no iframe e exibida com os dois roteadores",
+      "status": "passed",
+      "command": "validacao ao vivo da pagina original dentro do iframe do painel",
+      "observed": "pagina original renderizada com os dois roteadores, filtros, interruptores, cartoes e graficos; sem erros de console",
+      "evidence": "progress.md, secao Correcao: painel original restaurado (2026-10-22)"
+    },
+    {
+      "id": "N7-redirect-deployment",
+      "scope": "(retirado) implantacao do patch JEV_DASHBOARD_REDIRECT",
+      "status": "not-applicable",
+      "command": "nao aplicavel: patch retirado do upstream",
+      "observed": "nao ha commit, reinstalacao nem reinicio de gateway pendentes por causa do patch",
+      "evidence": "progress.md, secao Correcao: painel original restaurado (2026-10-22)"
+    },
+    {
+      "id": "M-agy-1",
+      "scope": "Antigravity CLI (agy 1.4.5): registro por workspace, MCP global, hooks, launcher, finalizacao e handoff na CLI; IDE e App nao verificados",
+      "status": "passed",
+      "command": "jev-memory clients install antigravity <dir>; jev-memory clients check antigravity <dir>; jev-memory-agy -p <prompt>; memory_handoff_begin em uma sessao agy e leitura na sessao seguinte; memory_status pelo MCP do agy; jev-memory agy-finalize",
+      "observed": "agy 1.4.5, Windows 10, ai-memory 3.1.2 em 2026-10-23. Sessao real com agent_kind antigravity-cli e observacoes session-start, pre-tool-use, post-tool-use, stop e session-end (finalizada), zero erros de hook. Handoff entregue na sessao seguinte. memory_status pelo MCP do agy retornou o projeto correto. Headless -p nega MCP sem permissions.allow ou --dangerously-skip-permissions. IDE e App nao verificados."
+    },
+    {
+      "id": "H1-headroom-claude",
+      "status": "passed",
+      "command": "npm run build; npm run typecheck; npm run lint; npm test; npm run test:headroom; npm run test:e2e; npm run test:projects; throwaway-profile supervisor check",
+      "evidence": ".local/evidence/headroom-e2e.json",
+      "observed": "Headroom 0.41.0 (uv, ~/.local/bin), Claude Code 2.1.309, Windows 10. test:headroom 7/7; build, typecheck e lint ok; npm test 420/420; test:e2e 4/4; test:projects 1/1. Perfil descartável: start ready em 0,32 s, Headroom pronto em 11,1 s, reinício após morte do processo sem sair de ready; versão divergente, executável ausente e porta ocupada isolados (unavailable, unavailable, failed; fase ready). Medido com Claude Code real via Headroom e Jev isolado, provedor simulado, sem chamadas pagas: esquemas −337 tokens por requisição (cerca de 2,5%); Bash com 25 KB de JSON: requisição −23%, resultado −65%; 167 KB: −51% com 800/800 linhas; leitura de arquivo 0%; Jev cerca de −0,5%. Cache real e custo não medidos. Codex não suportado."
+    },
+    {
+      "id": "H2-headroom-claude-validation",
+      "status": "passed",
+      "command": "npm run build; npm run typecheck; npm run lint; npm test; npm run test:headroom; npm run test:claude-launch; npm run test:e2e; npm run test:projects; npm run test:semantic; .local/e2e/headroom-bench.ts",
+      "evidence": ".local/evidence/claude-launch-e2e.json; .local/evidence/headroom-bench.json",
+      "observed": "test:claude-launch 7/7 (jev-memory claude real, perfis isolados, Claude Code com chave falsa): Headroom ligado (stdout JSON único, x-api-key intacto, 120/120 ids e 3/3 ERROR, 27.818→11.337 bytes), hooks com 6 observações e handoff injetado, opt-out, fallback por versão, desligado, recuperação após morte do processo, limpeza sem chave nos logs. Corrigido: stdout do jev-claude --start ia para o stdout do cliente. Bench (40 req/cenário): overhead p50 +3 a +9 ms, p95 +7 a +28 ms; JSON 25 KB e 167 KB −67% tokens sem perda; Headroom 409→650 MB após 326 req; 22 endpoints sem prompt, conteúdo ou credencial; CORS só loopback; escuta só 127.0.0.1. Descoberta uv: PATH, ~/.local/bin e caminho configurado."
+    },
+    {
+      "id": "H3-headroom-claude-live",
+      "status": "passed",
+      "command": "perfil controlado project-<hash> (template hr-live, Headroom ligado) via jev-memory claude -p --model haiku, Jev vivo 8789, OAuth Pro; A com Headroom, B com JMS_HEADROOM=off; perfil removido ao final",
+      "observed": "Aprovado pelo usuário (Haiku). A e B corretos (3 ERROR, ids req-100000/100047/100094, palavra-código do handoff), 3 turnos, rotas Jev 200 (hint→passthrough), 6 tipos de observação nos hooks, sem anomalia de autenticação, 0 erros no log do Headroom, 0 segredos nos logs. Uso real da Anthropic (A vs B): entrada processada 179.693 vs 191.953 (−6,4%); turno com tool result 63.794 vs 72.878 (−12,5%); cache write 63.792 vs 72.876 (−12,5%); cache read 115.895 vs 119.071; cache de prefixo acertou em todos os turnos seguintes; custo estimado US$ 0,01423 vs 0,01614 (−11,9%). Tokens de decisão do Jev 21.626 vs 20.608 (+4,9%). Overhead: otimização 357/9/74 ms, repasse +2 a 3 ms sobre a rota do Jev, launcher +0,1 s; latência da Anthropic variou entre as execuções (n=1). RAM do Headroom 605→710 MB."
+    },
+    {
+      "id": "H4-headroom-codex",
+      "status": "passed",
+      "command": "npm run build; npm run typecheck; npm run lint; npm test; npm run test:headroom; npm run test:headroom-codex; npm run test:claude-launch; npm run test:codex-launch; npm run test:e2e; npm run test:projects; npm run test:semantic; python -I patches/headroom/0.41.0/jms_headroom_shim.py --check",
+      "evidence": ".local/evidence/headroom-codex-e2e.json; .local/evidence/codex-launch-e2e.json",
+      "observed": "Fase 2 (Codex → Headroom → Jev → backend ChatGPT/OpenAI), sem chamadas pagas. npm test 448/448; test:headroom 7/7; test:headroom-codex 11/11 (shim real, Jev codex real, backend simulado, JWT ChatGPT falso: streaming, Authorization e ChatGPT-Account-ID intactos, saída de ferramenta 27.883→11.430 bytes com 120/120 ids e 3/3 ERROR, prefixo idêntico, modelos via Jev, caminho por chave de API, override x-headroom-base-url ignorado e egress api.openai.com bloqueado, WebSocket só via Jev, zero tentativas a chatgpt.com, nada sensível nos logs); test:codex-launch 10/10 (Codex 0.163 real, login ChatGPT falso, CODEX_HOME isolado, cerca de egress: Headroom ativo no modo Codex, opt-out, fallback para Headroom só-Claude, codex desligado, Claude no mesmo perfil, recuperação com modo Codex mantido, hosts da cerca idênticos ao baseline sem Headroom, roster de ferramentas idêntico ao baseline, sem chave/JWT/account id nos logs); test:claude-launch 7/7; test:e2e 4/4; test:projects 1/1; test:semantic 1/1. Corrigidos: litellm baixava o mapa de preços do GitHub (LITELLM_LOCAL_MODEL_COST_MAP=True) e chatgpt-account-id aparecia nos logs (shim + supervisor). Não validado ao vivo com o backend real."
+    },
+    {
+      "id": "H5-headroom-codex-live",
+      "status": "passed",
+      "command": "perfil controlado project-<hash> (template hr-live-codex, headroom.codex=true) via jev-memory codex exec -m gpt-6-luna low, assinatura ChatGPT, jev-codex 8790; A com Headroom, B com JMS_HEADROOM=off; perfil removido e jev-codex parado ao final",
+      "evidence": ".local/evidence/headroom-codex-live.json",
+      "observed": "Aprovado pelo usuário (gpt-6-luna, sem bypass de hooks). A e B corretos (3 ERROR, ids, palavra-código do handoff lida pelo MCP de memória via exec em code mode). A: 7 requisições, todas Codex→Headroom→8790, 7 rotas Jev 200, uso do Jev igual ao do Codex, 0 egress bloqueado, 0 chatgpt.com no log do Headroom; descoberta de modelos 2x 200 via Headroom; streaming response.completed. Tokens: turnos de mesmo conteúdo −0,5% (24.835 vs 24.966; 29.818 vs 29.957); total A 253.209/7 req vs B 314.718/8 req (trajetórias diferentes, n=1); cache 83,4% vs 84,8%; Headroom estimou 2.449 tokens economizados (schema de ferramentas e, nas req 5-7, saída de ferramenta). Overhead de otimização ~5 ms; latência média do Jev 2,23 s vs 2,03 s (variação do upstream). RAM Headroom 645 MB, jev-codex 80 MB. Sem anomalia de autenticação, authorization e chatgpt-account-id redigidos, 0 JWT nos logs. Hooks: 0 observações (projeto não confiável, sem bypass); rollout da sessão persistido."
+    },
+    {
+      "id": "H6-codex-hooks-native-trust",
+      "status": "passed",
+      "command": "npm run build; npm run typecheck; npm run lint; npm test; npm run test:headroom; npm run test:headroom-codex; npm run test:claude-launch; npm run test:codex-launch",
+      "evidence": ".local/evidence/codex-launch-e2e.json; .local/evidence/headroom-e2e.json; .local/evidence/headroom-codex-e2e.json",
+      "observed": "Sem requisições pagas. npm test 448/448; test:headroom 7/7 (tool result 27.817→11.247 bytes); test:headroom-codex 11/11 (27.883→11.430); test:claude-launch 7/7; test:codex-launch 12/12. MCP de memória em code mode: exec listou 24/24 ferramentas mcp__jev_memory_suite__ e leu o handoff via memory_handoff_list, com e sem Headroom. Hooks com confiança nativa em CODEX_HOME isolado (clients install codex; hooks/list + config/batchWrite com currentHash): 7 listados, 7 untrusted→7 trusted; observações session-start, user-prompt, pre-tool-use, post-tool-use, stop, session-end iguais com e sem Headroom; sem --dangerously-bypass-hook-trust; hash do ~/.codex/config.toml real inalterado. Correção: HEADROOM_LOSSLESS_ONLY=1 no ambiente do Headroom (sem ela, com --no-ccr, SmartCrusher descartava itens de array sem marcador: 16/24 nomes no e2e, 11/24 offline); --lossless rejeitado (sem compressão). Pendente: handoff não aparece na primeira requisição do Codex com e sem Headroom (entrega pelo SessionStart não comprovada)."
     }
   ],
   "milestones": {
@@ -89,8 +893,19 @@
     "M7": "passed"
   },
   "clients": {
-    "claudeCli": "passed",
-    "codexCli": "partial (MCP passed; hook capture pending native trust)",
-    "codexDesktop": "pending (requires validation inside the app)"
+    "claudeCli": "passed (all 9 hook events verified in real sessions)",
+    "codexCli": "partial (MCP and hook capture verified with temporary bypass; normal trust via /hooks pending user)",
+    "codexDesktop": "pending (UNVERIFIED; manual checklist in docs/guides/clients.md)"
+  },
+  "gaps": {
+    "G1": "resolved",
+    "G2": "resolved (interactive client capture pending)",
+    "G3": "resolved"
+  },
+  "stabilization": {
+    "S1-P0-2": "resolved (interactive validation in a new session pending)",
+    "S1-P0-1": "pending user action (credential rotation)",
+    "S2": "partial (Codex CLI real capture passed; Codex Desktop pending; /hooks review pending user)",
+    "S3": "partial (Codex normal trust and Desktop pending user action)"
   }
 }

@@ -1,0 +1,50 @@
+--- a/headroom/providers/codex/endpoints.py
++++ b/headroom/providers/codex/endpoints.py
+@@ -2,9 +2,24 @@
+ 
+ from __future__ import annotations
+ 
+-CHATGPT_BACKEND_API_URL = "https://chatgpt.com"
+-CHATGPT_BACKEND_WS_URL = "wss://chatgpt.com"
+-CODEX_BACKEND_PREFIX = "/backend-api/codex"
++import os
++from urllib.parse import urlsplit
++
++# HEADROOM_CHATGPT_CODEX_BASE_URL moves the Codex backend (HTTP, WebSocket and ChatGPT-auth passthrough) to another
++# origin and path, for example a local gateway. The scheme of the base picks the WebSocket scheme: https -> wss, http -> ws.
++DEFAULT_CHATGPT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
++_base = urlsplit(os.environ.get("HEADROOM_CHATGPT_CODEX_BASE_URL", "").strip() or DEFAULT_CHATGPT_CODEX_BASE_URL)
++if _base.scheme not in ("http", "https") or not _base.hostname or _base.query or _base.fragment or _base.username or _base.password:
++    raise ValueError("HEADROOM_CHATGPT_CODEX_BASE_URL must be an http(s) URL without query, fragment or userinfo")
++
++CHATGPT_BACKEND_API_URL = f"{_base.scheme}://{_base.netloc}"
++CHATGPT_BACKEND_WS_URL = f"{'wss' if _base.scheme == 'https' else 'ws'}://{_base.netloc}"
++CODEX_BACKEND_PREFIX = _base.path.rstrip("/")
++
++
++def chatgpt_backend_origin() -> str:
++    """Return the HTTP origin that ChatGPT-auth passthrough requests are forwarded to."""
++    return CHATGPT_BACKEND_API_URL
+ 
+ 
+ def chatgpt_backend_url(path: str, query: str = "") -> str:
+--- a/headroom/providers/proxy_targets.py
++++ b/headroom/providers/proxy_targets.py
+@@ -12,7 +12,7 @@
+     is_copilot_completions_path,
+ )
+ from headroom.providers.codex import resolve_codex_routing
+-from headroom.providers.codex.endpoints import CHATGPT_BACKEND_API_URL
++from headroom.providers.codex.endpoints import chatgpt_backend_origin
+ from headroom.providers.codex.runtime import DEFAULT_API_URL as DEFAULT_OPENAI_API_URL
+ from headroom.providers.grok.runtime import DEFAULT_API_URL as XAI_API_URL
+ from headroom.providers.grok.runtime import is_grok_cli_request
+@@ -100,7 +100,7 @@
+     """Resolve the upstream base URL for catch-all proxy passthrough requests."""
+     routing = resolve_codex_routing(headers)
+     if routing.is_chatgpt_auth:
+-        return CHATGPT_BACKEND_API_URL
++        return chatgpt_backend_origin()
+     if headers.get("x-goog-api-key"):
+         return api_target(proxy, "gemini")
+     if headers.get("api-key"):

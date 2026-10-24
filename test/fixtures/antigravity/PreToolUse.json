@@ -1,0 +1,16 @@
+{
+  "artifactDirectoryPath": "{{HOME}}/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000001",
+  "conversationId": "00000000-0000-4000-8000-000000000001",
+  "modelName": "gemini-test-model",
+  "stepIdx": 2,
+  "toolCall": {
+    "args": {
+      "Path": "{{WORKSPACE}}/note.txt"
+    },
+    "name": "read_file"
+  },
+  "transcriptPath": "{{HOME}}/.gemini/antigravity-cli/brain/00000000-0000-4000-8000-000000000001/.system_generated/logs/transcript_full.jsonl",
+  "workspacePaths": [
+    "{{WORKSPACE}}"
+  ]
+}

@@ -1,4 +1,4 @@
-import { cp, readFile, access, rename, rm, copyFile, constants } from 'node:fs/promises';
+import { cp, readFile, writeFile, access, rename, rm, copyFile, constants } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomBytes } from 'node:crypto';
@@ -140,15 +140,35 @@ export async function install(engine: string): Promise<void> {
   await atomicJson(resolve(root, '.local/installed.json'), { sources, lastInstalled: engine, at: new Date().toISOString(),
     engines: { memory: pointer.memory?.tree ?? null, gateway: pointer.gateway?.tree ?? null } });
 }
-export async function initMemory(dir: string): Promise<void> {
+// The suite-managed first line of config.toml; any other provider is user configuration and is never touched.
+const MANAGED_PROVIDER_LINE = /^embedding_provider = "(none|local)"(\r?\n|$)/;
+function providerLine(semantic: boolean): string {
+  return `embedding_provider = "${semantic ? 'local' : 'none'}"`;
+}
+// Latin-1 maps every byte to one character, so the rest of the file is rewritten byte for byte.
+export async function syncEmbeddingProvider(configPath: string, semantic: boolean): Promise<boolean> {
+  const text = (await readFile(configPath)).toString('latin1');
+  const match = MANAGED_PROVIDER_LINE.exec(text);
+  if (!match || match[1] === (semantic ? 'local' : 'none')) return false;
+  const next = providerLine(semantic) + match[2] + text.slice(match[0].length);
+  const tmp = `${configPath}.${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    await writeFile(tmp, Buffer.from(next, 'latin1'), { mode: 0o600, flag: 'wx' });
+    await rename(tmp, configPath);
+  } catch (e) {
+    await rm(tmp, { force: true });
+    throw e;
+  }
+  return true;
+}
+export async function initMemory(dir: string, semantic = true): Promise<void> {
   const data = resolve(dir, 'memory'); await prepare(data);
   const config = resolve(data, 'config.toml');
-  try { await access(config); return; }
-  catch { /* Fresh isolated data directory only. */ }
+  if (await exists(config)) { await syncEmbeddingProvider(config, semantic); return; }
   await run(memoryBinary(), ['--data-dir', data, 'init'], 'memory-init.log');
   // Never change a pre-existing installation or rotate its credentials.
   const contents = await readFile(config, 'utf8');
-  const safe = 'embedding_provider = "none"\nbackfill_on_start = false\n\n' + contents
+  const safe = `${providerLine(semantic)}\nbackfill_on_start = false\n\n` + contents
     .replace(/^lambda = .*$/m, 'lambda = 0.0')
     .replace(/^cold_threshold = .*$/m, 'cold_threshold = 0.0')
     .replace(/^hard_delete_after_days = .*$/m, 'hard_delete_after_days = 4294967295')
@@ -156,6 +176,5 @@ export async function initMemory(dir: string): Promise<void> {
     .replace(/^enabled = true$/m, 'enabled = false')
     .replace(/^\[auth\]$/m, '[maintenance]\nenabled = false\n\n[auth]');
   // Fresh init contains auth credentials: retain only in ignored local storage.
-  const { writeFile } = await import('node:fs/promises');
   await writeFile(config, safe, { mode: 0o600 });
 }

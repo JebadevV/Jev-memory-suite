@@ -3,6 +3,7 @@ import { createServer } from 'node:net';
 import { access, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { assertLocal, configSchema, prepare, profileDir, profileName, projectDirectory, readConfig, root, workspaceDir } from './config.js';
+import { upstreamGateways } from './gateways.js';
 
 export interface ProjectContext { name: string; cwd: string }
 
@@ -17,22 +18,23 @@ async function availablePorts(): Promise<number[]> {
   const servers: ReturnType<typeof createServer>[] = [];
   try {
     // Exclude persisted profiles too: a stopped project must retain its ports on the next launch.
-    const reserved = new Set<number>();
+    // The upstream launchers' gateway ports are taken by their own processes, so new projects must avoid them too.
+    const reserved = new Set<number>((await upstreamGateways()).map(gateway => gateway.port));
     const profiles = resolve(root, '.local/profiles');
     for (const name of await readdir(profiles).catch(() => [] as string[])) {
       if (!profileName.safeParse(name).success) continue;
       const c = await readConfig(name).catch((e: NodeJS.ErrnoException) => { if (e.code === 'ENOENT') return undefined; throw e; });
       if (!c) continue; // Another process may be exclusively creating its suite.json.
-      for (const port of [c.controlPort, c.memory.port, c.gateway.port, c.dashboard.port]) reserved.add(port);
+      for (const port of [c.controlPort, c.memory.port, c.gateway.port, c.dashboard.port, c.headroom.port]) reserved.add(port);
     }
     const ports: number[] = [];
-    for (let attempt = 0; ports.length < 4 && attempt < 100; attempt++) {
+    for (let attempt = 0; ports.length < 5 && attempt < 100; attempt++) {
       const server = createServer(); servers.push(server);
       await new Promise<void>((ok, fail) => { server.once('error', fail); server.listen(0, '127.0.0.1', ok); });
       const address = server.address();
       if (address && typeof address !== 'string' && !reserved.has(address.port)) ports.push(address.port);
     }
-    if (ports.length !== 4) throw new Error('Could not allocate distinct local project ports');
+    if (ports.length !== 5) throw new Error('Could not allocate distinct local project ports');
     return ports;
   } finally {
     await Promise.all(servers.map(server => new Promise<void>(done => server.close(() => done()))));
@@ -50,11 +52,12 @@ async function isolatedProfile(template: string, target: string): Promise<string
     return name;
   }
   const base = await readConfig(template);
-  const [controlPort, memoryPort, gatewayPort, dashboardPort] = await availablePorts();
+  const [controlPort, memoryPort, gatewayPort, dashboardPort, headroomPort] = await availablePorts();
   const slug = basename(target).toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 16);
   const project = `p-${slug || 'folder'}-${hash}`;
   const c = configSchema.parse({ ...base, projectRoot: target, project, controlPort,
-    memory: { ...base.memory, port: memoryPort }, gateway: { ...base.gateway, port: gatewayPort }, dashboard: { port: dashboardPort } });
+    memory: { ...base.memory, port: memoryPort }, gateway: { ...base.gateway, port: gatewayPort }, dashboard: { port: dashboardPort },
+    headroom: { ...base.headroom, port: headroomPort } });
   await prepare(dir);
   try { await writeFile(file, `${JSON.stringify(c, null, 2)}\n`, { flag: 'wx', mode: 0o600 }); }
   catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e; await readConfig(name); }

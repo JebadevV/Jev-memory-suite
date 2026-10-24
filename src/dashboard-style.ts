@@ -1,5 +1,5 @@
 // Stylesheet for the suite dashboard. Tokens and classes mirror upstream jev-gateway dashboard.html so both panels read as one site.
-// Purpose: maintainers. Date: 2026-10-21.
+// Purpose: maintainers. Date: 2026-10-22.
 export const dashboardCss = `
   :root {
     color-scheme: light;
@@ -72,6 +72,37 @@ export const dashboardCss = `
 
   .gateway-head { max-width: 1180px; margin: 0 auto; padding: 24px 16px 8px; }
   .gateway-frame { display: block; width: 100%; height: 100vh; border: 0; background: var(--plane); }
+  .gateway-frame.gateway-tall { height: 80vh; }
+  .gateway-offline { display: grid; gap: 8px; max-width: 1180px; margin: 0 auto; }
+  .gateway-offline p { margin: 0; color: var(--ink-2); }
+  .gateway-offline code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+  .gw-section { display: grid; gap: 12px; }
+  .gw-note { margin: -4px 0 0; }
+  .gw-grid { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
+  @media (min-width: 720px) { .gw-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .gw-wide { grid-column: 1 / -1; }
+  .gw-card { display: grid; gap: 10px; align-content: start; border-left: 4px solid var(--state, var(--muted)); }
+  .gw-card .who { margin: 0; font-size: 12px; font-weight: 400; color: var(--ink-2); }
+  .gw-head { display: grid; gap: 2px; min-width: 0; }
+  .gw-card .state { font-size: 20px; font-weight: 650; line-height: 1.2; overflow-wrap: anywhere; }
+  .gw-card .why { margin: 0; font-size: 12px; color: var(--ink-2); }
+  .gw-metrics { margin: 0; display: grid; gap: 4px 12px; min-width: 0; }
+  .gw-metrics > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; padding-top: 4px; border-top: 1px solid var(--border); }
+  .gw-metrics dt { font-size: 12px; color: var(--ink-2); }
+  .gw-metrics dd { margin: 0; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .gw-sub { margin: 4px 0 0; font-size: 12px; font-weight: 600; color: var(--ink-2); }
+  .gw-stale { margin: 0; font-size: 12px; color: var(--ink-2); border-left: 3px solid var(--warning); padding-left: 8px; }
+  .gw-table-wrap { min-width: 0; max-width: 100%; overflow-x: auto; border: 1px solid var(--border); border-radius: 9px; }
+  .gw-table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .gw-table th, .gw-table td { padding: 6px 8px; border-top: 1px solid var(--border); text-align: left; vertical-align: top; }
+  .gw-table thead th { border-top: 0; color: var(--ink-2); font-weight: 600; }
+  .gw-table tbody th { font-weight: 400; color: var(--ink-2); }
+  .gw-table td { text-align: right; white-space: normal; overflow-wrap: anywhere; font-weight: 600; }
+  .gw-models { min-width: 720px; }
+  .gw-disclaimer { margin: 0; }
+  .s-ok { --state: var(--good); }
+  .s-warn { --state: var(--warning); }
   .toasts { position: fixed; right: 16px; bottom: 16px; z-index: 10; display: grid; gap: 8px; width: min(360px, calc(100vw - 32px)); max-width: calc(100vw - 32px); pointer-events: none; }
   .toast { display: grid; gap: 2px; width: 100%; padding: 12px 14px; font: inherit; text-align: left; color: var(--ink); background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--good); border-radius: 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12); cursor: pointer; pointer-events: auto; animation: toast-in 180ms ease-out; }
   .toast-project { font-size: 11px; font-weight: 600; color: var(--ink-2); overflow-wrap: anywhere; }

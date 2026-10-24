@@ -1,5 +1,6 @@
 // Panel script for the suite dashboard. Untrusted titles, paths and project labels are written with textContent only.
 // Purpose: maintainers. Date: 2026-10-22.
+import { dashboardGatewayJs } from './dashboard-gateway-script.js';
 export const dashboardJs = `(function () {
   'use strict';
   var POLL_MS = 5000;
@@ -293,5 +294,14 @@ export const dashboardJs = `(function () {
   }
   pollFeed();
   setInterval(pollFeed, FEED_POLL_MS);
+
+  // The frame or fallback was built for one aggregator; a different one means a reload is needed. The panel never reloads by itself.
+  function checkAggregatorNotice(data) {
+    var slot = $('gateway-slot');
+    var current = data && data.ok === true && data.aggregator ? data.aggregator.client + ':' + data.aggregator.port : 'none';
+    $('gateway-notice').hidden = current === slot.getAttribute('data-aggregator');
+  }
+
+  ${dashboardGatewayJs}
 })();
 `;

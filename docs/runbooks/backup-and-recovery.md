@@ -1,6 +1,6 @@
 # Backup e recuperação
 
-Propósito: descrever como copiar e restaurar a memória do perfil, e como reverter registros de clientes e versões de motores. Público: operadores. Data: 2026-10-21.
+Propósito: descrever como copiar e restaurar a memória do perfil, como reverter a migração do histórico, e como reverter registros de clientes e versões de motores. Público: operadores. Data: 2026-10-22.
 
 Regra geral: pare o perfil antes de restaurar ou de substituir arquivos. Faça um backup antes de qualquer operação destrutiva.
 
@@ -39,6 +39,25 @@ O upstream oferece `restore --from <arquivo.tar.gz>`. Essa operação **sobrescr
 - O upstream valida e prepara o arquivo antes de trocar os dados. Uma falha deixa `wiki/` e `db/` como estavam.
 - Antes de restaurar, faça um backup do estado atual.
 - O procedimento completo e as opções estão em `upstream/ai-memory/docs/lifecycle-ops.md`. Leia-o antes de usar. Não execute `restore` com `--force` sem entender o efeito.
+
+## Rollback da migração
+
+Antes de aplicar a migração, o comando `migrate-history --apply` cria um backup do destino em `.local/backups/migration-<ts>/`, com `memory.sqlite` e `SHA256SUMS`. O relatório do apply (`.local/evidence/migration-<ts>-apply.json`) registra o caminho do backup e a lista `wiki.created`.
+
+Para desfazer uma aplicação:
+
+1. Pare a suíte: `node bin/jev-memory.mjs stop`. A restauração não deve acontecer com o perfil em uso.
+2. Confira o hash do backup com `SHA256SUMS`, por exemplo com `Get-FileHash -Algorithm SHA256`.
+3. Copie `.local/backups/migration-<ts>/memory.sqlite` para `.local/profiles/<perfil>/memory/db/memory.sqlite`, substituindo o arquivo atual.
+4. Remova `memory.sqlite-wal` e `memory.sqlite-shm` do mesmo diretório `db/`, se existirem. Um WAL ou SHM remanescente não corresponde ao banco restaurado.
+5. Apague os arquivos de wiki listados em `wiki.created` do relatório, com caminhos relativos a `.local/profiles/<perfil>/memory/wiki`. Apague só esses arquivos.
+6. Inicie a suíte: `node bin/jev-memory.mjs start`, e confira com `doctor`.
+
+O backup do destino cobre só o banco (`memory.sqlite`), não a wiki. Por isso a remoção dos arquivos de wiki depende exclusivamente da lista `wiki.created` do relatório. Arquivos de wiki que já existiam antes da migração não foram tocados e não devem ser apagados.
+
+Se o relatório não existir ou não tiver `wiki.created`, restaure só o banco e não apague arquivos da wiki por suposição. Arquivos de wiki novos vindos da migração podem permanecer no disco até serem removidos manualmente, com conferência caso a caso.
+
+Procedimento completo, com a leitura do relatório: [migração do histórico](../guides/migration.md#rollback).
 
 ## Reversão de registro de cliente
 

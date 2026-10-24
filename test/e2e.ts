@@ -4,8 +4,9 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { createServer as netServer, type AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { configSchema, json, prepare, profileDir, root, type Config } from '../src/config.js';
 import { init, start, stop, running, control } from '../src/lifecycle.js';
 import { atomicJson, baseEnv, sleep, token } from '../src/local.js';
@@ -141,20 +142,31 @@ async function startGatewayRig(): Promise<GatewayRig> {
 }
 
 // Creates a fresh profile with its own distinct ports; the suite.json is rewritten through the schema.
-async function createProfile(mode: Mode, flags: { memory: boolean; gateway: boolean }, rig?: GatewayRig): Promise<{ name: string; config: Config }> {
+// projectRoot is optional: only a test that plans a launch needs an external root (the hook fixtures stay under .local/e2e).
+async function createProfile(mode: Mode, flags: { memory: boolean; gateway: boolean }, rig?: GatewayRig, projectRoot?: string): Promise<{ name: string; config: Config }> {
   const name = `e2e-${mode}-${Date.now()}`, ports = PORTS[mode];
   await init(name);
-  const path = resolve(profileDir(name), 'suite.json');
-  const base = configSchema.parse(await json(path));
-  const routing = rig ? { upstreamUrl: rig.upstream.url, jevUrl: rig.jevUrl, allowedHosts: ['127.0.0.1'] } : {};
-  const config = configSchema.parse({
-    ...base, controlPort: ports.control,
-    dashboard: { port: await freeTcpPort() },
-    memory: { enabled: flags.memory, port: ports.memory },
-    gateway: { ...base.gateway, ...routing, enabled: flags.gateway, port: ports.gateway }
-  });
-  await atomicJson(path, config);
-  return { name, config };
+  try {
+    const path = resolve(profileDir(name), 'suite.json');
+    const base = configSchema.parse(await json(path));
+    const routing = rig ? { upstreamUrl: rig.upstream.url, jevUrl: rig.jevUrl, allowedHosts: ['127.0.0.1'] } : {};
+    const config = configSchema.parse({
+      ...base, controlPort: ports.control, ...(projectRoot === undefined ? {} : { projectRoot }),
+      dashboard: { port: await freeTcpPort() },
+      memory: { enabled: flags.memory, port: ports.memory },
+      gateway: { ...base.gateway, ...routing, enabled: flags.gateway, port: ports.gateway }
+    });
+    await atomicJson(path, config);
+    return { name, config };
+  } catch (error) {
+    await rm(profileDir(name), { recursive: true, force: true, maxRetries: 5 }); // Created here, so removed here on failure.
+    throw error;
+  }
+}
+// Stops the profile this test started, then deletes the profile folder it created. A profile that will not stop is kept.
+async function removeProfile(name: string): Promise<void> {
+  await stop(name);
+  await rm(profileDir(name), { recursive: true, force: true, maxRetries: 5 });
 }
 async function startProfile(name: string): Promise<ServiceState> {
   return await start(name) as ServiceState;
@@ -292,7 +304,7 @@ test('gateway only: supervisor and gateway auth, routed request, memory disabled
     evidence.memoryPortRefused = true; evidence.mcpConnectRejected = true;
     await writeEvidence('gateway', evidence, key);
   } finally {
-    if (name) await stop(name);
+    if (name) await removeProfile(name);
     await rig.close();
     restoreEnv();
   }
@@ -338,7 +350,7 @@ test('memory only: MCP auth, tools, synthetic page, hook capture and persistence
     evidence.gatewayPortRefused = true;
     await writeEvidence('memory', evidence, key);
   } finally {
-    await stop(name);
+    await removeProfile(name);
     if (fixture) await rm(fixture, { recursive: true, force: true });
   }
 });
@@ -362,14 +374,17 @@ test('gateway and memory: routed request plus MCP page round trip', { timeout: 2
     await assertMemoryTools(name, c, stamp, evidence);
     await writeEvidence('both', evidence, key);
   } finally {
-    if (name) await stop(name);
+    if (name) await removeProfile(name);
     await rig.close();
     restoreEnv();
   }
 });
 
-test('both disabled: ready with no services, closed ports, and no launch flags', { timeout: 240_000 }, async () => {
-  const { name, config: c } = await createProfile('disabled', { memory: false, gateway: false });
+test('both disabled: ready with no services, closed ports, and no launch flags', { timeout: 240_000 }, async t => {
+  // The launch plan reads the cwd's registration, so this profile and its cwd are both outside the repository.
+  const launchRoot = await realpath(await mkdtemp(join(tmpdir(), 'e2e-launch-')));
+  t.after(() => rm(launchRoot, { recursive: true, force: true, maxRetries: 5 }));
+  const { name, config: c } = await createProfile('disabled', { memory: false, gateway: false }, undefined, launchRoot);
   const key = await token(profileDir(name));
   const evidence: Evidence = { mode: 'disabled', ports: PORTS.disabled };
   try {
@@ -380,7 +395,7 @@ test('both disabled: ready with no services, closed ports, and no launch flags',
     assert.equal(await refuses(c.memory.port), true, 'memory port must refuse when disabled');
     assert.equal(await refuses(c.gateway.port), true, 'gateway port must refuse when disabled');
     await assert.rejects(Mcp.connect(name), /Memory engine disabled/);
-    const claude = await planLaunch('claude', name), codex = await planLaunch('codex', name);
+    const claude = await planLaunch('claude', name, launchRoot), codex = await planLaunch('codex', name, launchRoot);
     assert.deepEqual(claude.args, []);
     assert.deepEqual(codex.args, []);
     evidence.portsRefused = true; evidence.mcpConnectRejected = true;
@@ -390,5 +405,6 @@ test('both disabled: ready with no services, closed ports, and no launch flags',
   } finally {
     await stop(name);
     assert.equal(await running(name), false, 'profile must stop cleanly');
+    await rm(profileDir(name), { recursive: true, force: true, maxRetries: 5 });
   }
 });

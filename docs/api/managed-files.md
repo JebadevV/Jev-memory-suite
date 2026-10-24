@@ -1,6 +1,6 @@
 # Arquivos gerenciados
 
-Propósito: documentar os formatos dos arquivos que a suíte cria, lê e atualiza, inclusive os manifestos de propriedade e os backups. Público: integradores, operadores e revisores. Data: 2026-10-21.
+Propósito: documentar os formatos dos arquivos que a suíte cria, lê e atualiza, inclusive os manifestos de propriedade, os backups e o modelo de embeddings. Público: integradores, operadores e revisores. Data: 2026-10-23.
 
 Os exemplos usam valores ilustrativos. Nenhum deles contém segredo real.
 
@@ -15,18 +15,23 @@ Os exemplos usam valores ilustrativos. Nenhum deles contém segredo real.
 | `memory/config.toml` | TOML | `ai-memory init` seguido de ajustes da suíte (veja abaixo) |
 | `memory/auth-tokens/default` | Credencial do AI Memory | `ai-memory init`. Nunca recriada se já existir. |
 | `launch/claude-mcp.json`, `launch/claude-settings.json` | JSON | `launch claude`, de forma atômica |
+| `memory/models/all-MiniLM-L6-v2/` (`model.safetensors`, `tokenizer.json`, `config.json`) | Arquivos do modelo, em hardlink ao cache quando possível | `ensureLocalModel`, antes do `serve`, somente se `memory.semanticSearch` for `true`. Arquivo que não confere com o sha256 nunca é sobrescrito. |
+| `.local/models/all-MiniLM-L6-v2/` | Cache verificado e compartilhado entre perfis | `ensureLocalModel`. Regenerável: pode ser apagado, e será recriado a partir de uma fonte verificada. |
 
 ### Ajustes gravados no `config.toml` de uma memória nova
 
 Quando o diretório de dados é novo, a suíte grava:
 
-- `embedding_provider = "none"` e `backfill_on_start = false` no topo.
+- `embedding_provider = "local"` no topo, ou `"none"` quando `memory.semanticSearch` for `false`. Veja [ADR 0007](../architecture/adr/0007-local-semantic-memory.md).
+- `backfill_on_start = false` logo abaixo. Esse ajuste trata da importação de sessões antigas e é independente do backfill de embeddings de páginas.
 - `lambda = 0.0`, `cold_threshold = 0.0` e `hard_delete_after_days = 4294967295` no bloco de decaimento. Na prática, o decaimento fica desligado.
 - `require_approval = true` no bloco de melhoria automática.
 - `enabled = false` no agendador.
 - Um bloco `[maintenance]` com `enabled = false`, inserido antes de `[auth]`.
 
-A permissão do arquivo é gravada como `0600`, mas o Windows não aplica esse modo. Se o diretório já tiver `config.toml`, nada é alterado.
+A permissão do arquivo é gravada como `0600`, mas o Windows não aplica esse modo.
+
+Se o diretório já tiver `config.toml`, o `start` chama `syncEmbeddingProvider`. A função altera **somente a primeira linha** `embedding_provider = "none"` ou `"local"`, que é a linha gerida pela suíte, e só quando o valor precisa mudar. Qualquer outro provedor é configuração do usuário e não é tocado. O restante do arquivo é reescrito byte a byte, e a escrita é atômica.
 
 ## Engines (`.local/engines/`)
 
@@ -79,6 +84,7 @@ Os caminhos são relativos ao diretório informado em `clients`, que pode estar 
 |---|---|---|---|---|
 | Claude | `.mcp.json` | `.claude/settings.local.json` | `.ai-memory.toml` | `.jev-memory-claude.json` |
 | Codex (CLI e Desktop) | `.codex/config.toml` | `.codex/hooks.json` | `.ai-memory.toml` | `.jev-memory-codex.json` |
+| Antigravity CLI (agy) | Global, fora do workspace: `~/.gemini/config/mcp_config.json` | `.agents/hooks.json` | `.ai-memory.toml` | `.jev-memory-antigravity.json` |
 
 ### Entrada MCP
 
@@ -87,7 +93,16 @@ Os caminhos são relativos ao diretório informado em `clients`, que pode estar 
 
 ### Hooks
 
-Em `.claude/settings.local.json` e `.codex/hooks.json`, a chave `hooks` recebe um item por evento, no formato `{"matcher": "", "hooks": [{"type": "command", "command": "...", "timeout": 25}]}`. Itens de outras ferramentas são preservados.
+Em `.claude/settings.local.json` e `.codex/hooks.json`, a chave `hooks` recebe um item por evento do host, no formato `{"matcher": "", "hooks": [{"type": "command", "command": "...", "timeout": 25}]}`. O Claude recebe 9 eventos (inclui `PreCompact`, `Stop`, `SubagentStart` e `SubagentStop`). O Codex recebe 7, sem os dois eventos de subagente. Itens de outras ferramentas são preservados.
+
+### Antigravity CLI (agy)
+
+- **Hooks:** grupo `jev-memory-suite` em `.agents/hooks.json`, com 4 eventos (`PreInvocation`, `PreToolUse`, `PostToolUse` e `Stop`). Outros grupos são preservados. O arquivo é lido com BOM UTF-8 tolerado e gravado sem BOM.
+- **Entrada MCP global:** em `~/.gemini/config/mcp_config.json`, o servidor `jev_memory_suite`. É registrado com `agy mcp add`, somente se a entrada não existir. Se o nome já pertencer a outro servidor, a instalação recusa. O agy só lê MCP de usuário nesse arquivo.
+- **BOM do arquivo global:** se o `mcp_config.json` começar com BOM UTF-8, a instalação grava antes o backup `mcp_config.json.jev-bom-<timestamp>.bak` ao lado do arquivo e remove exatamente o BOM.
+- **Remoção:** `clients remove` mantém a entrada global, porque outros projetos podem usá-la. Para removê-la, use `agy mcp remove jev_memory_suite`.
+- **Manifesto** `.jev-memory-antigravity.json`: o `host` é `antigravity`. Usa o mesmo mecanismo de propriedade (perfil e digest) dos demais hosts.
+- **Git:** `/.agents/hooks.json` está no `.gitignore` com barra inicial, então só é ignorado na raiz do repositório. O mesmo vale para os demais arquivos de cliente da raiz.
 
 ### Marcador `.ai-memory.toml`
 
@@ -106,7 +121,7 @@ Schema estrito:
 ```json
 {
   "profile": "<perfil>",
-  "host": "claude | codex",
+  "host": "claude | codex | antigravity",
   "bridge": { "command": "<node>", "args": ["<repo>/dist/src/bridge.js", "<perfil>"] },
   "hooks": { "<EventoDoCliente>": { "matcher": "", "hooks": [ "..." ] } },
   "preexistingEvents": ["<eventos que já existiam antes da instalação>"],

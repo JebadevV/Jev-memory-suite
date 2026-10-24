@@ -4,8 +4,13 @@ import { request, createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { summarize, summarizeFeed, dashboardHandler, mergeProjectFeeds, type MemoryFeed, type FeedItem } from '../src/dashboard.js';
 import type { ProjectEntry } from '../src/dashboard-projects.js';
+import {
+  aggregatorFor, emptySnapshot, type GatewayProbe, type GatewaySnapshot, type GatewayStatus, type UpstreamClient, type UpstreamGateway,
+} from '../src/gateways.js';
+import { summarizeRouteEvents } from '../src/gateway-metrics.js';
 
 interface Reply { status: number; headers: Record<string, string | string[] | undefined>; body: string }
+interface CallOptions { method?: string; host?: string; headers?: Record<string, string>; body?: string }
 
 function briefing(recentCount: number, titleLength = 10) {
   return {
@@ -24,36 +29,73 @@ function briefing(recentCount: number, titleLength = 10) {
 
 const emptyFeed = async (): Promise<MemoryFeed> => ({ ok: true, sessionId: null, items: [] });
 const oneProject = async (): Promise<ProjectEntry[]> => [{ id: 'default', label: 'jev-memory-suite' }];
+const PORTS: Record<UpstreamClient, number> = { claude: 19789, codex: 19790 };
+const ROUTER = { routing: true, shadow: false, minConfidence: null, recorded: 0, startedAt: null, upstream: null, jevModel: null, jevProvider: null };
+
+// The gateway as the port spec resolves it; origin is loopback like the real check.
+function gatewayOf(client: UpstreamClient, port: number): UpstreamGateway {
+  return {
+    client, label: client === 'claude' ? 'Claude' : 'Codex', portEnv: `JEV_${client.toUpperCase()}_PORT`, port,
+    source: 'installed', portValid: true, origin: `http://127.0.0.1:${port}`, dashboardUrl: `http://localhost:${port}/dashboard`,
+  };
+}
+
+// A gateway status as the real check reports it for a running or stopped gateway.
+function statusOf(client: UpstreamClient, running: boolean, port: number): GatewayStatus {
+  return {
+    client, label: client === 'claude' ? 'Claude' : 'Codex', port, portValid: true,
+    state: running ? 'running' : 'stopped', metrics: running ? 'ok' : 'offline',
+    router: running ? ROUTER : null, history: null, historyCompare: null,
+    cost: { history: null }, models: { history: [] }, experiment: 'default',
+  };
+}
+
+// The snapshot the real check builds: the aggregator comes from the same probe states through aggregatorFor.
+function snapshotWith(running: UpstreamClient[], ports: Record<UpstreamClient, number> = PORTS): GatewaySnapshot {
+  const gateways = (['claude', 'codex'] as const).map(client => gatewayOf(client, ports[client]));
+  const states: Partial<Record<UpstreamClient, GatewayProbe['state']>> = {
+    claude: running.includes('claude') ? 'running' : 'stopped',
+    codex: running.includes('codex') ? 'running' : 'stopped',
+  };
+  const aggregator = aggregatorFor(gateways, states);
+  return {
+    ...emptySnapshot(),
+    gateways: gateways.map(g => statusOf(g.client, running.includes(g.client), g.port)),
+    ...(aggregator ? { aggregator } : {}),
+  };
+}
+const bothRunning = async (): Promise<GatewaySnapshot> => snapshotWith(['claude', 'codex']);
 
 async function withDashboard(
   summary: (projectId?: string) => Promise<unknown>,
   run: (port: number) => Promise<void>,
   feed: (projectId?: string) => Promise<MemoryFeed> = emptyFeed,
   projects: () => Promise<ProjectEntry[]> = oneProject,
+  gateways: () => Promise<GatewaySnapshot> = bothRunning,
 ): Promise<void> {
   let handler: ReturnType<typeof dashboardHandler> | undefined;
   const server: Server = createServer((req, res) => handler?.(req, res));
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
   try {
     const port = (server.address() as AddressInfo).port;
-    handler = dashboardHandler({ port, gatewayDashboardUrl: 'http://localhost:8790/dashboard', summary, feed, projects });
+    handler = dashboardHandler({ port, gateways, summary, feed, projects });
     await run(port);
   } finally {
     await new Promise<void>(r => server.close(() => r()));
   }
 }
 
-function call(port: number, path: string, options: { method?: string; host?: string } = {}): Promise<Reply> {
+function call(port: number, path: string, options: CallOptions = {}): Promise<Reply> {
   return new Promise((ok, fail) => {
     const req = request({ host: '127.0.0.1', port, path, method: options.method ?? 'GET',
-      headers: { host: options.host ?? `127.0.0.1:${port}` } }, res => {
+      headers: { host: options.host ?? `127.0.0.1:${port}`, ...options.headers } }, res => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', chunk => { body += chunk; });
       res.on('end', () => ok({ status: res.statusCode ?? 0, headers: res.headers, body }));
     });
     req.on('error', fail);
-    req.end();
+    req.end(options.body);
   });
 }
 
@@ -177,20 +219,62 @@ test('index page includes the toast container as a polite live region', async ()
   });
 });
 
-test('index page carries a CSP scoped to the gateway origin and embeds the iframe', async () => {
+test('index page with no running gateway carries a CSP with no frame sources and no iframe', async () => {
   await withDashboard(async () => summarize(briefing(0)), async port => {
     const reply = await call(port, '/');
     const csp = String(reply.headers['content-security-policy']);
-    assert.match(csp, /frame-src http:\/\/localhost:8790 http:\/\/127\.0\.0\.1:8790/);
+    assert.match(csp, /frame-src 'none';/);
+    assert.doesNotMatch(csp, /frame-src (?!'none')/);
+    assert.match(csp, /script-src 'self';/);
+    assert.doesNotMatch(csp, /script-src[^;]*unsafe-inline/);
+    assert.match(csp, /connect-src 'self';/);
     assert.match(csp, /frame-ancestors 'none'/);
-    assert.match(reply.body, /<iframe[^>]*src="http:\/\/localhost:8790\/dashboard"[^>]*sandbox="allow-scripts allow-same-origin"/);
+    assert.equal((reply.body.match(/<iframe/g) ?? []).length, 0);
     assert.equal(reply.headers['cache-control'], 'no-store');
     assert.equal(reply.headers['x-content-type-options'], 'nosniff');
     assert.equal(reply.headers['referrer-policy'], 'no-referrer');
+  }, emptyFeed, oneProject, async () => snapshotWith([]));
+});
+
+test('index page frames only the aggregator loopback origins, codex first when both run', async () => {
+  await withDashboard(async () => summarize(briefing(0)), async port => {
+    const reply = await call(port, '/');
+    const csp = String(reply.headers['content-security-policy']);
+    assert.match(csp, /frame-src http:\/\/localhost:19790 http:\/\/127\.0\.0\.1:19790;/);
+    assert.doesNotMatch(csp, /frame-src[^;]*19789/);
+    assert.match(csp, /script-src 'self';/);
+    assert.match(csp, /frame-ancestors 'none'/);
   });
 });
 
-test('index page has the stable sections in pt-BR with the panel and gateway frame', async () => {
+test('index page frames the claude aggregator alone when codex is not running', async () => {
+  await withDashboard(async () => summarize(briefing(0)), async port => {
+    const csp = String((await call(port, '/')).headers['content-security-policy']);
+    assert.match(csp, /frame-src http:\/\/localhost:19789 http:\/\/127\.0\.0\.1:19789;/);
+  }, emptyFeed, oneProject, async () => snapshotWith(['claude']));
+});
+
+test('index page reflects custom gateway ports in its frame policy and its one iframe', async () => {
+  const custom = async () => snapshotWith(['claude', 'codex'], { claude: 18789, codex: 18790 });
+  await withDashboard(async () => summarize(briefing(0)), async port => {
+    const reply = await call(port, '/');
+    const csp = String(reply.headers['content-security-policy']);
+    assert.match(csp, /frame-src http:\/\/localhost:18790 http:\/\/127\.0\.0\.1:18790;/);
+    assert.doesNotMatch(csp, /19790|19789/);
+    assert.equal((reply.body.match(/<iframe/g) ?? []).length, 1);
+    assert.match(reply.body, /src="http:\/\/localhost:18790\/dashboard\?peers=18789"/);
+  }, emptyFeed, oneProject, custom);
+});
+
+test('index page carries exactly one iframe pointing at the codex aggregator when both gateways run', async () => {
+  await withDashboard(async () => summarize(briefing(0)), async port => {
+    const reply = await call(port, '/');
+    assert.equal((reply.body.match(/<iframe/g) ?? []).length, 1);
+    assert.match(reply.body, /src="http:\/\/localhost:19790\/dashboard\?peers=19789"/);
+  });
+});
+
+test('index page has the stable memory sections in pt-BR', async () => {
   await withDashboard(async () => summarize(briefing(0)), async port => {
     const reply = await call(port, '/');
     assert.match(reply.body, /<html lang="pt-BR">/);
@@ -202,7 +286,6 @@ test('index page has the stable sections in pt-BR with the panel and gateway fra
     assert.match(reply.body, /<main>/);
     assert.match(reply.body, /aria-labelledby="pending-title"/);
     assert.match(reply.body, /aria-labelledby="recent-title"/);
-    assert.match(reply.body, /<iframe class="gateway-frame"/);
   });
 });
 
@@ -217,17 +300,18 @@ test('panel script formats times with Intl and never writes HTML', async () => {
 
 test('no response exposes CORS headers', async () => {
   await withDashboard(async () => summarize(briefing(1)), async port => {
-    for (const path of ['/', '/app.js', '/memory/summary', '/missing']) {
+    for (const path of ['/', '/app.js', '/memory/summary', '/missing', '/gateways/status']) {
       const reply = await call(port, path);
       assert.equal(reply.headers['access-control-allow-origin'], undefined, path);
     }
   });
 });
 
-test('non-GET requests are refused', async () => {
+test('non-GET requests are refused on memory routes', async () => {
   await withDashboard(async () => summarize(briefing(0)), async port => {
     const reply = await call(port, '/memory/summary', { method: 'POST' });
-    assert.ok([405, 404].includes(reply.status));
+    assert.equal(reply.status, 405);
+    assert.equal(reply.headers.allow, 'GET');
   });
 });
 
@@ -325,5 +409,134 @@ test('panel script reads and writes the project choice only inside try/catch', a
     assert.match(reply.body, /\/memory\/projects/);
     assert.match(reply.body, /role/);
     assert.doesNotMatch(reply.body, /innerHTML|outerHTML|insertAdjacentHTML/);
+  });
+});
+
+test('gateways status returns ok with per-client statuses, combined totals and pricing as no-store JSON', async () => {
+  await withDashboard(async () => summarize(briefing(0)), async port => {
+    const reply = await call(port, '/gateways/status');
+    assert.equal(reply.status, 200);
+    assert.equal(reply.headers['cache-control'], 'no-store');
+    assert.equal(reply.headers['content-type'], 'application/json; charset=utf-8');
+    const body = JSON.parse(reply.body);
+    assert.equal(body.ok, true);
+    assert.deepEqual(body.gateways.map((g: GatewayStatus) => [g.client, g.state, g.metrics]), [['claude', 'running', 'ok'], ['codex', 'running', 'ok']]);
+    assert.deepEqual(Object.keys(body.combined).sort(), ['cost', 'history', 'historyCompare', 'models']);
+    assert.ok(body.combined.history);
+    assert.ok(body.combined.cost.history);
+    assert.deepEqual(body.pricing, { models: {}, jev: null });
+  });
+});
+
+test('gateways status exposes only the aggregator client and port, codex first when both run', async () => {
+  await withDashboard(async () => summarize(briefing(0)), async port => {
+    const body = JSON.parse((await call(port, '/gateways/status')).body);
+    assert.deepEqual(body.aggregator, { client: 'codex', port: 19790 });
+    assert.doesNotMatch(JSON.stringify(body), /origins|peers=|https?:\/\/|localhost|127\.0\.0\.1/);
+  });
+});
+
+test('gateways status reports a null aggregator when no gateway runs', async () => {
+  await withDashboard(async () => summarize(briefing(0)), async port => {
+    const body = JSON.parse((await call(port, '/gateways/status')).body);
+    assert.equal(body.aggregator, null);
+  }, emptyFeed, oneProject, async () => snapshotWith([]));
+});
+
+test('gateways status relays the per-model entries and the pricing echo as the snapshot has them', async () => {
+  const base = snapshotWith(['claude', 'codex']);
+  const entry = { model: 'model-a', metrics: summarizeRouteEvents([]), cost: { currency: 'USD' as const, llm: 2, jev: null, total: null, missing: ['jev-price', 'jev-output-tokens'] } };
+  const snapshot: GatewaySnapshot = {
+    ...base,
+    gateways: base.gateways.map(g => (g.client === 'claude' ? { ...g, models: { history: [entry] } } : g)),
+    pricing: { models: { 'model-a': { source: 'test-llm', verifiedAt: '2026-10-01' } }, jev: null },
+  };
+  await withDashboard(async () => summarize(briefing(0)), async port => {
+    const body = JSON.parse((await call(port, '/gateways/status')).body);
+    assert.deepEqual(body.gateways[0].models.history.map((e: { model: string }) => e.model), ['model-a']);
+    assert.deepEqual(body.gateways[1].models, { history: [] });
+    assert.deepEqual(body.pricing, snapshot.pricing);
+  }, emptyFeed, oneProject, async () => snapshot);
+});
+
+test('gateways status rejects a foreign Host header with 403', async () => {
+  await withDashboard(async () => summarize(briefing(0)), async port => {
+    const reply = await call(port, '/gateways/status', { host: `evil.com:${port}` });
+    assert.equal(reply.status, 403);
+  });
+});
+
+test('gateways status exposes no URLs, credentials or key material', async () => {
+  const gateways = async (): Promise<GatewaySnapshot> => {
+    const base = snapshotWith(['claude', 'codex']);
+    return { ...base, gateways: base.gateways.map(g => ({ ...g, history: { ...summarizeRouteEvents([{ mode: 'forced', durationMs: 120 }]), complete: true } })) };
+  };
+  await withDashboard(async () => summarize(briefing(0)), async port => {
+    const reply = await call(port, '/gateways/status');
+    assert.doesNotMatch(reply.body, /key=|Bearer|authorization|secret|https?:\/\//i);
+    assert.match(reply.body, /"durationMsAvg":120/);
+  }, emptyFeed, oneProject, gateways);
+});
+
+test('gateways status with a non-GET method is refused', async () => {
+  await withDashboard(async () => summarize(briefing(0)), async port => {
+    const reply = await call(port, '/gateways/status', { method: 'POST' });
+    assert.equal(reply.status, 405);
+    assert.equal(reply.headers.allow, 'GET');
+  });
+});
+
+test('a failing gateway check answers ok with no gateways instead of failing', async () => {
+  await withDashboard(async () => summarize(briefing(0)), async port => {
+    const status = await call(port, '/gateways/status');
+    assert.equal(status.status, 200);
+    const body = JSON.parse(status.body);
+    assert.equal(body.ok, true);
+    assert.deepEqual(body.gateways, []);
+    assert.equal(body.aggregator, null);
+    const index = await call(port, '/');
+    assert.equal((index.body.match(/<iframe/g) ?? []).length, 0);
+    assert.match(String(index.headers['content-security-policy']), /frame-src 'none';/);
+  }, emptyFeed, oneProject, async () => { throw new Error('probe failed at http://127.0.0.1:19790 with secret-token'); });
+});
+
+test('the gateway check is cached for a few seconds and loads once for concurrent requests', async () => {
+  let loads = 0;
+  const gateways = async (): Promise<GatewaySnapshot> => { loads += 1; await new Promise(r => setTimeout(r, 20)); return snapshotWith(['codex']); };
+  await withDashboard(async () => summarize(briefing(0)), async port => {
+    await Promise.all([call(port, '/gateways/status'), call(port, '/gateways/status')]);
+    await call(port, '/gateways/status');
+    assert.equal(loads, 1);
+  }, emptyFeed, oneProject, gateways);
+});
+
+test('the page script polls gateway status and never writes HTML', async () => {
+  await withDashboard(async () => summarize(briefing(0)), async port => {
+    const reply = await call(port, '/app.js');
+    assert.match(reply.body, /\/gateways\/status/);
+    assert.doesNotMatch(reply.body, /innerHTML|outerHTML|insertAdjacentHTML/);
+  });
+});
+
+test('every path is GET-only, including the removed routing path, which answers 405 with allow GET', async () => {
+  await withDashboard(async () => summarize(briefing(0)), async port => {
+    for (const path of ['/', '/app.js', '/memory/summary', '/memory/feed', '/memory/projects', '/gateways/status', '/gateways/routing']) {
+      const reply = await call(port, path, { method: 'POST' });
+      assert.equal(reply.status, 405, path);
+      assert.equal(reply.headers.allow, 'GET', path);
+    }
+  });
+});
+
+test('the routing path is not served by GET either', async () => {
+  await withDashboard(async () => summarize(briefing(0)), async port => {
+    assert.equal((await call(port, '/gateways/routing?client=codex&enabled=true')).status, 404);
+  });
+});
+
+test('a request with a foreign Host header is refused before the method check', async () => {
+  await withDashboard(async () => summarize(briefing(0)), async port => {
+    const reply = await call(port, '/gateways/status', { method: 'POST', host: `evil.com:${port}` });
+    assert.equal(reply.status, 403);
   });
 });
