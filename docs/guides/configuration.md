@@ -60,7 +60,7 @@ O interruptor de roteamento da página original do gateway não altera este modo
 
 ### Preços para custo estimado
 
-`observability.pricing` guarda os preços que o painel usa para estimar custo. **Não há preço padrão.** Sem preço configurado, o painel mostra o custo como não configurado, e o campo `missing` diz o que falta.
+`observability.pricing` guarda os preços que o painel usa para estimar custo. Há **dois preços padrão verificados**, para modelos Gemini (abaixo). Os preços configurados se mesclam a eles, e um preço configurado para o mesmo id vence o padrão. Não há padrão para Claude, Codex nem para o Jev. Um modelo sem preço, configurado ou padrão, mostra o custo como não configurado, e o campo `missing` diz o que falta.
 
 Preencha cada modelo com valores da **página oficial de preços do provedor**, registrando a fonte e a data de verificação:
 
@@ -99,6 +99,55 @@ Os campos de preço são números. Os marcadores `<...>` do exemplo abaixo não 
 O valor 0,042 USD por milhão de tokens de entrada do Jev é o que o próprio upstream exibe (`dashboard.html`, linha 158). Ele não foi confirmado contra o provedor, por isso o `source` aponta para o upstream. O preço de saída do Jev não tem valor de referência neste projeto: preencha com a fonte oficial. Se não houver fonte, omita o objeto `jev` inteiro, porque o schema exige `outputPerMTok` dentro dele. Como o upstream não registra tokens de saída do Jev, o custo do Jev nunca inclui saída.
 
 Os custos são **estimativas de preço de API**, calculadas a partir das contagens. Não são cobrança de assinatura e não são economia confirmada.
+
+#### Preços padrão
+
+| Modelo | Entrada | Leitura de cache | Saída | Vigência |
+|---|---|---|---|---|
+| `gemini-3.5-flash-lite` | 0,30 | 0,03 | 2,50 | sem data de fim |
+| `gemini-3.8-flash` | 0,75 | 0,075 | 3,75 | até 2026-12-31 |
+
+Valores em USD por milhão de tokens, plano pago Standard, verificados em 2026-10-24 na [página de preços do Gemini](https://ai.google.dev/gemini-api/docs/pricing) (última atualização da página: 2026-10-22, UTC). A saída inclui os tokens de raciocínio. A gravação de cache é 0, porque a API cobra o armazenamento do cache por hora, e a estimativa não inclui esse custo. A página anuncia, a partir de 2027-01-01, 1,50 de entrada, 0,15 de leitura de cache e 7,50 de saída para o `gemini-3.8-flash`. A suíte não aplica esses valores: a estimativa para no fim de 2026. Para usá-los, configure um preço novo com `verifiedAt` da data em que você conferiu.
+
+#### Validade (`validUntil`)
+
+`validUntil` é o último dia (UTC, inclusive) em que o preço vale. Depois dele, a estimativa não é calculada e o campo `missing` mostra `llm-price-expired:<modelo>`.
+
+#### Aliases
+
+O agy usa o id `gemini-3.8-flash-high`, que não aparece na página de preços. Para estimar esse modelo com o preço de `gemini-3.8-flash`, configure:
+
+```json
+"observability": {
+  "pricing": {
+    "aliases": {
+      "gemini-3.8-flash-high": "gemini-3.8-flash"
+    }
+  }
+}
+```
+
+É uma equivalência assumida, não verificada, e o painel a marca como tal. Um alias só vale quando o modelo observado não tem preço próprio e o alvo tem.
+
+#### Custo do Jev
+
+Sem `observability.pricing.jev`, o total do painel inclui o custo de LLM com a indicação "(sem preço do Jev)".
+
+#### Base de cobrança (`observability.billing`)
+
+Declara como os tokens de cada cliente são pagos. Não muda o cálculo; muda a linha de texto do card.
+
+```json
+"observability": {
+  "billing": { "claude": "unknown", "codex": "unknown", "agy": "subscription" }
+}
+```
+
+- `api`: cobrança por token. Exemplo: se a conta do Claude é paga por token, use `"claude": "api"`. O card mostra "Cobrança real: API por token".
+- `subscription`: plano fixo. O card mostra "Cobrança real: assinatura (custo por token não se aplica)".
+- `unknown`: não informado, padrão de Claude e Codex. O card mostra "Base de cobrança não configurada".
+
+Em todos os casos, o valor exibido é "Estimativa de preço de API".
 
 ## Portas
 

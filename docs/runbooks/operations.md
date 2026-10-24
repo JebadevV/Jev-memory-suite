@@ -49,7 +49,7 @@ O próximo lançamento (`jev-memory-codex` ou `jev-memory-claude`) também sobe 
 
 ## Gateways
 
-`doctor` mostra em `gateways` o estado dos dois gateways upstream, o de claude (porta 8789) e o de codex (porta 8790). A forma completa está em [saída de doctor dos gateways](../api/cli.md#saída-de-doctor-gateways).
+`doctor` mostra em `gateways` o estado dos gateways upstream de claude (porta 8789) e de codex (porta 8790). O gateway do agy (porta 8794) também aparece no status e no doctor; procedimentos na seção [gateway do agy](#gateway-do-agy-jev-gateway). A forma completa está em [saída de doctor dos gateways](../api/cli.md#saída-de-doctor-gateways).
 
 - Esses gateways são iniciados e parados pelo launcher upstream, não pela suíte. A suíte só consulta o estado. Para parar o gateway de um cliente, use o próprio launcher: `node bin/jev-memory.mjs codex --stop` ou `node bin/jev-memory.mjs claude --stop`, que repassam a opção ao launcher upstream.
 - `running` indica que `/health` respondeu. `stopped` indica conexão recusada. `unavailable` indica falha da sonda ou timeout de 1 s; não diz a causa. Para ver o estado do launcher, use `--status` no mesmo comando.
@@ -81,7 +81,7 @@ Para medir com e sem Jev de forma controlada, use o experimento de `gatewayExper
 
 ### Preços e custo
 
-`observability.pricing` define os preços usados para estimar custo. Não há valor padrão. Procedimento e cuidados em [configuração, preços para custo estimado](../guides/configuration.md#preços-para-custo-estimado).
+`observability.pricing` define os preços usados para estimar custo. Há dois preços padrão verificados (modelos Gemini), e um preço configurado para o mesmo id vence o padrão. `observability.pricing.aliases`, `validUntil` e `observability.billing` (base de cobrança por cliente) também são configurados ali. Procedimento e cuidados em [configuração, preços para custo estimado](../guides/configuration.md#preços-para-custo-estimado).
 
 O custo é uma **estimativa de preço de API**. Não representa cobrança de assinatura e não confirma economia.
 
@@ -100,9 +100,57 @@ node bin/jev-memory.mjs agy-finalize
 node bin/jev-memory.mjs agy-finalize --session <id>
 ```
 
-Sem `--session`, o comando finaliza a sessão agy aberta mais recente do projeto. Após uma queda forçada do launcher, a finalização automática não é garantida. `Stop` é fim de turno e não encerra a sessão.
+Sem `--session`, o comando finaliza a sessão agy aberta mais recente do projeto. Após uma queda forçada do launcher, use a recuperação descrita abaixo. `Stop` é fim de turno e não encerra a sessão.
 
 Logs de diagnóstico do hook: `.local/profiles/<perfil>/logs/hook-errors.log` e `hook-skips.log`. Não contêm conteúdo.
+
+### Recuperação e fechamento da janela
+
+- Cada lançamento grava `<launchId>.owner.json` (`pid`, `startedAt`, `workspace`, `project`, `cwd`; sem conteúdo), ao lado de `<launchId>.sessions`. Os dois são removidos ao finalizar.
+- Fechar a janela do console envia `SIGHUP` ao launcher. Ele finaliza o próprio lançamento uma única vez, com prazo total de cerca de 7 s. O que não terminar nesse prazo fica registrado para a recuperação.
+- Antes de cada lançamento, a recuperação automática finaliza só os lançamentos cujo dono tem pid morto. Ela faz claim por rename (`.sessions.recovering-<pid>`), e um claim de processo morto pode ser retomado. Usa o escopo gravado, não o config atual. Não lê outro perfil.
+- Dono vivo, owner inválido ou escopo divergente do config atual não são tocados. O launcher avisa.
+- Procedimento manual:
+
+```bash
+node bin/jev-memory.mjs agy-finalize --recover
+node bin/jev-memory.mjs agy-finalize --recover --legacy
+```
+
+`--recover` também inclui lançamentos com escopo divergente, finalizados com o escopo gravado (a saída traz `scope: "recorded"`). `--recover --legacy` finaliza ainda os registros sem owner, de versões anteriores, com o config atual do perfil. Antes de usar `--legacy`, confirme que nenhum agy está rodando. A saída é JSON com `recovered` e `skipped`, e o motivo de cada pulo (por exemplo, `no-owner`). `--session` não se combina com `--recover`, e `--legacy` exige `--recover`.
+
+## Gateway do agy (Jev Gateway)
+
+`jev-memory-agy` (ou `jev-memory agy`) passa pelo Jev Gateway em modo passthrough, usando o Code Assist do agy, quando as verificações passam. Não há roteamento: o conteúdo não é enviado ao provedor do Jev. A ordem das checagens e os motivos de fallback estão em [clientes](../guides/clients.md#antigravity-cli-agy).
+
+- Com o gateway, o stderr mostra `Jev gateway: http://127.0.0.1:8794 (passthrough)`.
+- Sem o gateway, o stderr mostra `Jev not used: <motivo>`, e o agy segue direto ao Google com o mesmo código de saída.
+- `JMS_AGY_GATEWAY=off` no ambiente desliga o uso do gateway. O agy segue direto ao Google.
+- A porta vem de `JEV_AGY_PORT`; sem valor válido, usa 8794. O health fica em `http://127.0.0.1:<porta>/health`.
+- Arquivos: `~/.jev-gateway/agy.log`, lido pelo dashboard, e `~/.jev-gateway/agy.pid`, conferido pelo launcher.
+- Se o gateway estiver parado, o próximo `jev-memory-agy` o inicia sozinho.
+
+Para parar o gateway agy:
+
+```bash
+node <gatewayDir>/bin/jev-agy.mjs --stop
+```
+
+`<gatewayDir>` é a pasta da versão ativa do gateway, dentro de `.local/engines/jev-gateway/` (a marcada como `current` em `gateway-versions`). Não use `kill` no PID do gateway.
+
+Versões e rollback:
+
+```bash
+node bin/jev-memory.mjs install gateway
+node bin/jev-memory.mjs gateway-versions
+node bin/jev-memory.mjs gateway-rollback <id>
+```
+
+- `install gateway` imprime `{previous, current}`.
+- `gateway-rollback <id>` troca só o ponteiro da versão ativa. Não apaga versões. Não reinicia gateways: o gateway agy em execução segue na versão anterior até parar e subir de novo. Os gateways Claude e Codex seguem o mesmo critério, no próximo start.
+- O id tem 40 caracteres hexadecimais e precisa ser uma versão completa dentro de `.local/engines/jev-gateway/`. Id inválido ou versão inexistente saem com código 1.
+
+O card "Antigravity" do painel só aparece depois de `node bin/jev-memory.mjs restart`. O restart reinicia memória e dashboard, mas não os gateways Claude e Codex.
 
 ## Headroom (Claude)
 

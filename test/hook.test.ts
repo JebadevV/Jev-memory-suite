@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, rmdir, stat, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { root, workspaceDir } from '../src/config.js';
-import { nativeHook, parseHookPayload, recordActiveSession, hookErrorLine, hookOutput, hookSkipLine, hostEvents, ACTIVE_SESSION_FILE, type HookSkipReason,
+import { nativeHook, parseHookPayload, recordActiveSession, clearActiveSession, hookErrorLine, hookOutput, hookSkipLine, hostEvents, ACTIVE_SESSION_FILE, activeSessionFile, type HookSkipReason,
   antigravityCliSurface, antigravityEvents, antigravityOutput, launchSessionsFile, readLaunchSessions, recordLaunchSession } from '../src/hook.js';
 const sessionStart = { session_id: 'sess-1', cwd: root };
 const localDir = resolve(root, '.local');
@@ -82,6 +82,25 @@ test('recordActiveSession replaces the previous session id', async () => {
     await recordActiveSession(dir, 'sess-old');
     await recordActiveSession(dir, 'sess-new');
     assert.equal(await readFile(resolve(dir, ACTIVE_SESSION_FILE), 'utf8'), 'sess-new');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+test('recordActiveSession with an agent writes the legacy file and that agent file only', async () => {
+  const dir = await scratchDir();
+  try {
+    await recordActiveSession(dir, 'sess-claude', 'claude-code');
+    await recordActiveSession(dir, 'sess-agy', 'antigravity-cli');
+    assert.equal(await readFile(resolve(dir, ACTIVE_SESSION_FILE), 'utf8'), 'sess-agy');
+    assert.equal(await readFile(resolve(dir, activeSessionFile('claude-code')), 'utf8'), 'sess-claude');
+    assert.equal(await readFile(resolve(dir, activeSessionFile('antigravity-cli')), 'utf8'), 'sess-agy');
+    await assert.rejects(readFile(resolve(dir, activeSessionFile('codex')), 'utf8'), { code: 'ENOENT' });
+    assert.deepEqual((await readdir(dir)).filter(n => n.endsWith('.tmp')), []);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+test('recordActiveSession ignores an unknown agent name and writes only the legacy file', async () => {
+  const dir = await scratchDir();
+  try {
+    await recordActiveSession(dir, 'sess-x', 'not-an-agent');
+    assert.deepEqual((await readdir(dir)).sort(), [ACTIVE_SESSION_FILE]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 test('recordActiveSession swallows write failures so capture is never blocked', async () => {
@@ -219,6 +238,34 @@ test('recordActiveSession uses a unique temp name per write and leaves none behi
     await Promise.all(['sess-a', 'sess-b', 'sess-c', 'sess-d'].map(id => recordActiveSession(dir, id)));
     assert.match(await readFile(resolve(dir, ACTIVE_SESSION_FILE), 'utf8'), /^sess-[a-d]$/);
     assert.deepEqual((await readdir(dir)).filter(n => n.endsWith('.tmp')), []);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+test('clearActiveSession removes the agent and legacy files that hold the ending session', async () => {
+  const dir = await scratchDir();
+  try {
+    await recordActiveSession(dir, 'sess-end', 'claude-code');
+    await writeFile(resolve(dir, activeSessionFile('codex')), 'sess-end\n');
+    await clearActiveSession(dir, 'claude-code', 'sess-end');
+    assert.deepEqual((await readdir(dir)).sort(), [activeSessionFile('codex')]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+test('clearActiveSession preserves a session id that another client wrote since', async () => {
+  const dir = await scratchDir();
+  try {
+    await recordActiveSession(dir, 'sess-claude', 'claude-code');
+    await recordActiveSession(dir, 'sess-agy', 'antigravity-cli');
+    await clearActiveSession(dir, 'claude-code', 'sess-claude');
+    assert.equal(await readFile(resolve(dir, ACTIVE_SESSION_FILE), 'utf8'), 'sess-agy');
+    assert.equal(await readFile(resolve(dir, activeSessionFile('antigravity-cli')), 'utf8'), 'sess-agy');
+    await assert.rejects(readFile(resolve(dir, activeSessionFile('claude-code')), 'utf8'), { code: 'ENOENT' });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+test('clearActiveSession never throws when no breadcrumb exists', async () => {
+  const dir = await scratchDir();
+  try {
+    await assert.doesNotReject(clearActiveSession(dir, 'codex', 'sess-1'));
+    await assert.doesNotReject(clearActiveSession(resolve(localDir, `missing-dir-${Date.now()}`), 'codex', 'sess-1'));
+    assert.deepEqual(await readdir(dir), []);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 // Antigravity CLI (agy) fixtures: placeholders are substituted on parsed values, so Windows paths need no JSON escaping.

@@ -1,11 +1,11 @@
 import { parseArgs } from 'node:util';
 import { init, start, stop, doctor, configure, control, supervisorState } from './lifecycle.js';
-import { install } from './install.js';
+import { install, listGatewayVersions, rollbackGateway } from './install.js';
 import { update } from './update.js';
 import { profileName, readConfig } from './config.js';
 import { clients } from './clients.js';
 import { checkMcp } from './mcp.js';
-import { launch, jevLaunch, openDashboard, agyLaunch, agyDelegation, finalizeAgySession, ensureServicesReady } from './launch.js';
+import { launch, jevLaunch, openDashboard, agyLaunch, agyDelegation, finalizeAgySession, ensureServicesReady, recoverAgyLaunches } from './launch.js';
 import { delegatedCommand } from './cli-args.js';
 import { projectContext } from './projects.js';
 import { runMigrateHistory } from './migrate.js';
@@ -37,7 +37,7 @@ async function main() {
   }
   const separator = raw.indexOf('--');
   const nativeArgs = separator < 0 ? [] : raw.slice(separator + 1);
-  const { values, positionals: args } = parseArgs({ args: separator < 0 ? raw : raw.slice(0, separator), allowPositionals: true, options: { profile: { type: 'string', default: 'default' }, dir: { type: 'string', default: '.' }, from: { type: 'string' }, project: { type: 'string' }, as: { type: 'string' }, apply: { type: 'boolean', default: false }, session: { type: 'string' } } });
+  const { values, positionals: args } = parseArgs({ args: separator < 0 ? raw : raw.slice(0, separator), allowPositionals: true, options: { profile: { type: 'string', default: 'default' }, dir: { type: 'string', default: '.' }, from: { type: 'string' }, project: { type: 'string' }, as: { type: 'string' }, apply: { type: 'boolean', default: false }, session: { type: 'string' }, recover: { type: 'boolean', default: false }, legacy: { type: 'boolean', default: false } } });
   let name = profileName.parse(values.profile);
   const [cmd, a, b] = args;
   let cwd = values.dir;
@@ -49,7 +49,10 @@ async function main() {
   }
   switch (cmd) {
     case 'init': await init(name); break;
-    case 'install': await install(a ?? 'all'); break;
+    // Prints the gateway version before and after, so the operator knows the target of a later gateway-rollback.
+    case 'install': { const gateway = await install(a ?? 'all'); if (gateway) console.log(JSON.stringify(gateway, null, 2)); break; }
+    case 'gateway-versions': console.log(JSON.stringify(await listGatewayVersions(), null, 2)); break;
+    case 'gateway-rollback': if (!a) throw new Error('gateway-rollback requires a version id; list them with gateway-versions'); console.log(JSON.stringify(await rollbackGateway(a), null, 2)); break;
     case 'start': console.log(JSON.stringify(await start(name), null, 2)); break;
     case 'stop': await stop(name); break;
     case 'restart': case 'recover': await stop(name); console.log(JSON.stringify(await start(name), null, 2)); break;
@@ -63,11 +66,18 @@ async function main() {
     case 'launch': if (!a) throw new Error('launch claude|codex [--dir <project-directory>] -- <native arguments>'); await launch(a, name, nativeArgs, cwd); break;
     case 'agy-finalize': {
       await ensureServicesReady(name, ['memory']);
+      // --recover finalizes launches whose process died; --legacy also covers records written before owners existed (check that no agy is running first).
+      if (values.recover) {
+        if (values.session !== undefined) throw new Error('agy-finalize --recover takes no --session');
+        console.log(JSON.stringify(await recoverAgyLaunches(name, { config: await readConfig(name), cwd, legacy: values.legacy, recordedScope: true }), null, 2));
+        break;
+      }
+      if (values.legacy) throw new Error('agy-finalize --legacy requires --recover');
       console.log(await finalizeAgySession(name, await readConfig(name), values.session, cwd));
       break;
     }
     case 'migrate-history': await runMigrateHistory(name, values.from, values.apply, values.project, values.as); break;
-    default: console.log('jev-memory [--profile name] [--dir project-directory] init|install [all|gateway|memory]|start|stop|restart|status|doctor|recover|config <file>|update <engine> <sha>|mcp|dashboard|clients install|remove|check claude|codex|antigravity|desktop [dir]|launch claude|codex -- <args>|codex|claude [args|--dashboard|--status|--stop|--setup]|agy [args]|agy-finalize [--session <id>]|migrate-history --from <data-dir> [--project <ws>/<projeto>] [--as <ws>/<projeto>] [--apply]  (uses current project; reuses upstream jev-codex/jev-claude + AI Memory)');
+    default: console.log('jev-memory [--profile name] [--dir project-directory] init|install [all|gateway|memory]|gateway-versions|gateway-rollback <id>|start|stop|restart|status|doctor|recover|config <file>|update <engine> <sha>|mcp|dashboard|clients install|remove|check claude|codex|antigravity|desktop [dir]|launch claude|codex -- <args>|codex|claude [args|--dashboard|--status|--stop|--setup]|agy [args]|agy-finalize [--session <id>]|agy-finalize --recover [--legacy]|migrate-history --from <data-dir> [--project <ws>/<projeto>] [--as <ws>/<projeto>] [--apply]  (uses current project; reuses upstream jev-codex/jev-claude + AI Memory)');
   }
 }
 main().catch(e => { console.error(e instanceof Error ? e.message : 'Command failed'); process.exitCode = 1; });

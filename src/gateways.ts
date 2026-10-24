@@ -1,14 +1,16 @@
-// Upstream launcher gateways (claude and codex): where they listen, whether they answer, their normalized route data and the aggregator the dashboard frames. Purpose: operators.
+// Upstream launcher gateways (claude, codex and agy): where they listen, whether they answer, their normalized route data and the aggregator the dashboard frames. Purpose: operators.
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { gatewayDir } from './install.js';
 import type { HistoryResult } from './gateway-history.js';
 import {
-  combineMetrics, estimateCost, type CostEstimate, type JevPrice, type LlmPrice, type ModelMetrics, type RouteMetrics,
+  chooseLlmPrice, combineMetrics, estimateCost, estimateModelCost, isLlmMissing,
+  type CostEstimate, type JevPrice, type LlmPrice, type ModelMetrics, type RouteMetrics,
 } from './gateway-metrics.js';
 import { combineCompare, type Compare } from './gateway-views.js';
+import { defaultBilling, type BillingMode } from './config.js';
 
-export type UpstreamClient = 'claude' | 'codex';
+export type UpstreamClient = 'claude' | 'codex' | 'agy';
 export interface UpstreamGateway {
   client: UpstreamClient; label: string; portEnv: string; port: number;
   // 'fallback' when the installed upstream spec was missing or unusable and the built-in values were used.
@@ -22,14 +24,19 @@ interface ResolvedSpec extends PortSpec { source: 'installed' | 'fallback' }
 
 const MIN_PORT = 1024, MAX_PORT = 65535, PROBE_TIMEOUT_MS = 1000;
 const ENV_NAME = /^[A-Z][A-Z0-9_]{0,60}$/;
-const LABELS: Record<UpstreamClient, string> = { claude: 'Claude', codex: 'Codex' };
+const LABELS: Record<UpstreamClient, string> = { claude: 'Claude', codex: 'Codex', agy: 'Antigravity' };
 // Same values as upstream bin/clients.mjs; used only when the installed spec cannot be read.
 const FALLBACK: Record<UpstreamClient, PortSpec> = {
   claude: { portEnv: 'JEV_CLAUDE_PORT', defaultPort: 8789 },
   codex: { portEnv: 'JEV_CODEX_PORT', defaultPort: 8790 },
+  agy: { portEnv: 'JEV_AGY_PORT', defaultPort: 8794 },
 };
 // Codex first: whichever gateway answers serves the one dashboard page for both clients.
 const AGGREGATOR_ORDER: readonly UpstreamClient[] = ['codex', 'claude'];
+// Antigravity always runs in passthrough, so it has no experiment mode of its own.
+const PASSTHROUGH_CLIENTS: readonly UpstreamClient[] = ['agy'];
+// A client without its installed spec has only a guessed port, so it is not probed and reads as unavailable.
+const UNPROBED_WITHOUT_SPEC: readonly UpstreamClient[] = ['agy'];
 
 const validPort = (value: number): boolean => Number.isInteger(value) && value >= MIN_PORT && value <= MAX_PORT;
 
@@ -55,13 +62,13 @@ async function upstreamSpecs(dir?: string): Promise<Record<UpstreamClient, Resol
   } catch {
     // Not installed or unreadable: both clients fall back, and doctor reports the source.
   }
-  return { claude: specOf(mod.claude, 'claude'), codex: specOf(mod.codex, 'codex') };
+  return { claude: specOf(mod.claude, 'claude'), codex: specOf(mod.codex, 'codex'), agy: specOf(mod.agy, 'agy') };
 }
 
 /** Where each upstream launcher listens. An env override is used only when it is a usable port. */
 export async function upstreamGateways(env: NodeJS.ProcessEnv = process.env, dir?: string): Promise<UpstreamGateway[]> {
   const specs = await upstreamSpecs(dir);
-  return (['claude', 'codex'] as const).map(client => {
+  return (['claude', 'codex', 'agy'] as const).map(client => {
     const { portEnv, defaultPort, source } = specs[client];
     const raw = env[portEnv], override = parsePort(raw), port = override ?? defaultPort;
     return {
@@ -132,7 +139,9 @@ export function aggregatorFor(gateways: UpstreamGateway[], states: Partial<Recor
   const client = AGGREGATOR_ORDER.find(name => states[name] === 'running');
   const gateway = gateways.find(g => g.client === client);
   if (!gateway) return undefined;
-  const peers = [...new Set(gateways.map(g => g.port).filter(port => port !== gateway.port && validPort(port)))];
+  // Only the clients this page shows are named as peers; the Antigravity port is not part of the frame.
+  const peers = [...new Set(gateways.filter(g => AGGREGATOR_ORDER.includes(g.client)).map(g => g.port)
+    .filter(port => port !== gateway.port && validPort(port)))];
   const query = peers.length ? `?peers=${peers.join(',')}` : '';
   return {
     client: gateway.client, port: gateway.port,
@@ -142,7 +151,7 @@ export function aggregatorFor(gateways: UpstreamGateway[], states: Partial<Recor
 }
 
 export type GatewayMetrics = 'ok' | 'auth-required' | 'unavailable' | 'offline';
-export type GatewayExperiment = 'default' | 'shadow' | 'metering';
+export type GatewayExperiment = 'default' | 'shadow' | 'metering' | 'passthrough';
 // The router's routing state and counters. The upstream is origin and path only (see safeUpstream); the Jev model and
 // provider are kept only when they match a plain name pattern. Anything else is null.
 export interface RouterInfo {
@@ -161,8 +170,10 @@ export interface GatewayStatus {
   cost: { history: CostEstimate | null };
   models: GatewayModels;
   experiment: GatewayExperiment;
+  // How this client's tokens are paid for (observability.billing). The cost figures are API price estimates either way.
+  billing: BillingMode;
 }
-export interface PriceInfo { source: string; verifiedAt: string }
+export interface PriceInfo { source: string; verifiedAt: string; validUntil?: string }
 export interface GatewaySnapshot {
   generatedAt: string; gateways: GatewayStatus[];
   combined: {
@@ -177,8 +188,11 @@ export interface GatewaySnapshot {
 }
 export interface GatewayFetchOptions { fetch?: typeof fetch; timeoutMs?: number }
 export interface GatewaySnapshotOptions extends GatewayFetchOptions {
-  pricing?: { models?: Record<string, LlmPrice>; jev?: JevPrice };
-  experiment?: Record<UpstreamClient, GatewayExperiment>;
+  pricing?: { models?: Record<string, LlmPrice>; jev?: JevPrice; aliases?: Record<string, string> };
+  billing?: Partial<Record<UpstreamClient, BillingMode>>;
+  // The instant that price validity is judged at; defaults to now.
+  now?: Date;
+  experiment?: Partial<Record<UpstreamClient, GatewayExperiment>>;
   history?: Partial<Record<UpstreamClient, () => Promise<HistoryResult | null>>>;
 }
 
@@ -277,50 +291,69 @@ async function historyOf(load: (() => Promise<HistoryResult | null>) | undefined
 interface GatewayPart { status: GatewayStatus; historyMetrics: RouteMetrics | null }
 
 const roundCost = (value: number): number => Math.round(value * COST_DECIMALS) / COST_DECIMALS;
-// Only a price the operator configured for this exact model name applies; inherited keys such as "constructor" never do.
-const priceOf = (prices: Record<string, LlmPrice> | undefined, model: string): LlmPrice | undefined =>
-  prices && Object.hasOwn(prices, model) ? prices[model] : undefined;
-const echoPrice = (price: { source: string; verifiedAt: string }): PriceInfo => ({ source: price.source, verifiedAt: price.verifiedAt });
+// The prices and the day they are judged on (UTC). A price is still valid on its validUntil day.
+interface PriceContext { models?: Record<string, LlmPrice>; aliases?: Record<string, string>; jev?: JevPrice; today: string }
+const contextOf = (options: GatewaySnapshotOptions): PriceContext => ({
+  models: options.pricing?.models, aliases: options.pricing?.aliases, jev: options.pricing?.jev,
+  today: (options.now ?? new Date()).toISOString().slice(0, 10),
+});
+const echoPrice = (price: { source: string; verifiedAt: string; validUntil?: string }): PriceInfo =>
+  ({ source: price.source, verifiedAt: price.verifiedAt, ...(price.validUntil !== undefined ? { validUntil: price.validUntil } : {}) });
+const billingOf = (options: GatewaySnapshotOptions, client: UpstreamClient): BillingMode => options.billing?.[client] ?? defaultBilling[client];
 
-// Per-model estimates: each model is priced with its own LLM rates and the gateway-wide Jev price.
-function entriesOf(models: ModelMetrics[], prices: Record<string, LlmPrice> | undefined, jev: JevPrice | undefined): ModelEntry[] {
-  return models.map(({ model, metrics }) => ({ model, metrics, cost: estimateCost(metrics, priceOf(prices, model), jev) }));
+// One model's estimate: its rate is chosen by chooseLlmPrice (own price, alias, or none); Jev uses the gateway-wide price.
+const modelCostOf = (model: string, metrics: RouteMetrics, ctx: PriceContext): CostEstimate =>
+  estimateModelCost(model, metrics, chooseLlmPrice(ctx.models, ctx.aliases, model, ctx.today), ctx.jev);
+
+// Per-model estimates.
+function entriesOf(models: ModelMetrics[], ctx: PriceContext): ModelEntry[] {
+  return models.map(({ model, metrics }) => ({ model, metrics, cost: modelCostOf(model, metrics, ctx) }));
 }
 
-// Client and combined cost. LLM is the sum of the model estimates, unknown if any model that made calls has no price.
+// Client and combined cost. LLM is the sum of the model estimates, unknown if any model that made calls has no usable price.
 // Jev has one price for the whole gateway, so it is estimated once from the total metrics.
 function aggregateCost(entries: ModelEntry[], total: RouteMetrics, jev: JevPrice | undefined): CostEstimate {
   const unpriced = entries.filter(entry => entry.cost.llm === null && entry.metrics.llm.calls > 0);
   const llm = unpriced.length > 0 ? null : roundCost(entries.reduce((sum, entry) => sum + (entry.cost.llm ?? 0), 0));
-  const jevCost = estimateCost(total, undefined, jev).jev;
+  const jevEstimate = estimateCost(total, undefined, jev), jevCost = jevEstimate.jev;
   const missing = new Set<string>([
-    ...unpriced.map(entry => `llm-price:${entry.model}`),
-    ...(jevCost === null ? ['jev-price'] : []),
-    'jev-output-tokens',
+    ...unpriced.flatMap(entry => entry.cost.missing.filter(isLlmMissing)),
+    ...jevEstimate.missing.filter(item => item.startsWith('jev-')),
   ]);
-  return {
+  const aliased: Record<string, string> = {};
+  for (const entry of entries) Object.assign(aliased, entry.cost.aliased);
+  const cost: CostEstimate = {
     currency: 'USD', llm, jev: jevCost, total: llm !== null && jevCost !== null ? roundCost(llm + jevCost) : null,
     missing: [...missing],
   };
+  if (Object.keys(aliased).length > 0) cost.aliased = aliased;
+  return cost;
 }
+
+// The probe for one gateway; a client without its installed spec is reported unavailable without any connection attempt.
+const probeOf = (gateway: UpstreamGateway): Promise<GatewayProbe> =>
+  UNPROBED_WITHOUT_SPEC.includes(gateway.client) && gateway.source === 'fallback'
+    ? Promise.resolve({ state: 'unavailable' })
+    : probeGateway(gateway.origin);
 
 async function inspectGateway(gateway: UpstreamGateway, options: GatewaySnapshotOptions, probe?: GatewayProbe): Promise<GatewayPart> {
   const { client, label, port, portValid, origin } = gateway;
-  const prices = options.pricing?.models, jev = options.pricing?.jev;
-  const [current, history] = await Promise.all([probe ?? probeGateway(origin), historyOf(options.history?.[client])]);
+  const ctx = contextOf(options);
+  const [current, history] = await Promise.all([probe ?? probeOf(gateway), historyOf(options.history?.[client])]);
   // Events are read only from a running gateway, and only for its router block.
   const read = current.state === 'running' ? await eventsOf(origin, options) : undefined;
   const metrics: GatewayMetrics = current.state === 'running' ? (read?.metrics ?? 'unavailable') : (current.state === 'stopped' ? 'offline' : 'unavailable');
   const router = read?.metrics === 'ok' ? read.router : null;
-  const historyModels = entriesOf(history?.byModel ?? [], prices, jev);
+  const historyModels = entriesOf(history?.byModel ?? [], ctx);
   return {
     status: {
       client, label, port, portValid, state: current.state, metrics, router,
       history: history ? { ...history.metrics, complete: history.complete } : null,
       historyCompare: history?.compare ?? null,
-      cost: { history: history ? aggregateCost(historyModels, history.metrics, jev) : null },
+      cost: { history: history ? aggregateCost(historyModels, history.metrics, ctx.jev) : null },
       models: { history: historyModels },
-      experiment: options.experiment?.[client] ?? 'default',
+      experiment: PASSTHROUGH_CLIENTS.includes(client) ? 'passthrough' : (options.experiment?.[client] ?? 'default'),
+      billing: billingOf(options, client),
     },
     historyMetrics: history?.metrics ?? null,
   };
@@ -332,39 +365,43 @@ export async function gatewayStatus(gateway: UpstreamGateway, options: GatewaySn
 }
 
 // Same model name across clients is one model: its metrics are merged, then priced once with the configured rates.
-function mergeModelEntries(lists: ModelEntry[][], prices: Record<string, LlmPrice> | undefined, jev: JevPrice | undefined): ModelEntry[] {
+function mergeModelEntries(lists: ModelEntry[][], ctx: PriceContext): ModelEntry[] {
   const byName = new Map<string, RouteMetrics[]>();
   for (const entry of lists.flat()) byName.set(entry.model, [...(byName.get(entry.model) ?? []), entry.metrics]);
   return [...byName]
     .map(([model, parts]) => {
       const metrics = combineMetrics(parts);
-      return { model, metrics, cost: estimateCost(metrics, priceOf(prices, model), jev) };
+      return { model, metrics, cost: modelCostOf(model, metrics, ctx) };
     })
     .sort((a, b) => b.metrics.events - a.metrics.events || (a.model < b.model ? -1 : a.model > b.model ? 1 : 0));
 }
 
-// Pools the clients that have a history comparison; with none, there is nothing to compare.
-const combinedCompareOf = (list: Compare[]): Compare | null => (list.length > 0 ? combineCompare(list) : null);
+// Pools the routed clients' comparisons; with none, there is nothing to compare. Passthrough clients are left out:
+// their events are all "routing disabled", which would count as a baseline they never had.
+const combinedCompareOf = (parts: GatewayPart[]): Compare | null => {
+  const list = parts.flatMap(part => (part.status.historyCompare && !PASSTHROUGH_CLIENTS.includes(part.status.client) ? [part.status.historyCompare] : []));
+  return list.length > 0 ? combineCompare(list) : null;
+};
 
-// Pricing echo: source and verifiedAt only. Rates never leave the server.
+// Pricing echo: source, verifiedAt and validUntil only. Rates never leave the server.
 function assemble(parts: GatewayPart[], options: GatewaySnapshotOptions, aggregator?: Aggregator): GatewaySnapshot {
   const histories = parts.flatMap(part => (part.historyMetrics ? [part.historyMetrics] : []));
   const history = combineMetrics(histories);
   const statuses = parts.map(part => part.status);
-  const prices = options.pricing?.models, jev = options.pricing?.jev;
-  const historyModels = mergeModelEntries(statuses.map(status => status.models.history), prices, jev);
+  const ctx = contextOf(options);
+  const historyModels = mergeModelEntries(statuses.map(status => status.models.history), ctx);
   return {
     generatedAt: new Date().toISOString(),
     gateways: statuses,
     combined: {
       history,
-      cost: { history: aggregateCost(historyModels, history, jev) },
+      cost: { history: aggregateCost(historyModels, history, ctx.jev) },
       models: { history: historyModels },
-      historyCompare: combinedCompareOf(statuses.flatMap(status => (status.historyCompare ? [status.historyCompare] : []))),
+      historyCompare: combinedCompareOf(parts),
     },
     pricing: {
-      models: Object.fromEntries(Object.entries(prices ?? {}).map(([model, price]) => [model, echoPrice(price)])),
-      jev: jev ? echoPrice(jev) : null,
+      models: Object.fromEntries(Object.entries(options.pricing?.models ?? {}).map(([model, price]) => [model, echoPrice(price)])),
+      jev: ctx.jev ? echoPrice(ctx.jev) : null,
     },
     ...(aggregator ? { aggregator } : {}),
   };
@@ -372,7 +409,7 @@ function assemble(parts: GatewayPart[], options: GatewaySnapshotOptions, aggrega
 
 /** Every gateway's status plus the combined totals, computed from the same probes. The aggregator is chosen from those probes. */
 export async function gatewaySnapshot(gateways: UpstreamGateway[], options: GatewaySnapshotOptions = {}): Promise<GatewaySnapshot> {
-  const probes = await Promise.all(gateways.map(gateway => probeGateway(gateway.origin)));
+  const probes = await Promise.all(gateways.map(probeOf));
   const states: Partial<Record<UpstreamClient, GatewayProbe['state']>> = {};
   gateways.forEach((gateway, index) => {
     const probe = probes[index];

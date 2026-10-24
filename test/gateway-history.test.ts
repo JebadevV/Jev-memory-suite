@@ -21,6 +21,30 @@ const routeLine = (tool: string, extra: Record<string, unknown> = {}): string =>
 test('historyFile joins the client log under .jev-gateway in the given or default home', () => {
   assert.equal(historyFile('claude', '/home/dev'), join('/home/dev', '.jev-gateway', 'claude.log'));
   assert.equal(historyFile('codex'), join(homedir(), '.jev-gateway', 'codex.log'));
+  assert.equal(historyFile('agy', '/home/dev'), join('/home/dev', '.jev-gateway', 'agy.log'));
+});
+
+test('an Antigravity log is read as route events: usage is summed, passthrough events count as baseline and never as with-Jev', async () => {
+  await withDir(async dir => {
+    // Arrange: two passthrough route lines, as the Antigravity launcher writes them.
+    const file = join(dir, 'agy.log');
+    const agy = (usage: Record<string, number>): string => routeLine('stream', {
+      mode: 'passthrough', reason: 'routing_disabled', path: '/v1internal:streamGenerateContent', model: 'gemini-3-pro', usage,
+    });
+    await writeFile(file, 'Jev gateway listening on 127.0.0.1:8794\n' + agy({ input: 119, output: 3 }) + agy({ input: 23192, output: 102, reasoning: 93 }));
+
+    // Act
+    const result = await createHistoryReader(file).refresh();
+
+    // Assert: input is the total with cache, output includes reasoning, and the reasoning share is reported apart.
+    assert.equal(result?.metrics.events, 2);
+    assert.equal(result?.metrics.llm.input, 23311);
+    assert.equal(result?.metrics.llm.output, 105);
+    assert.equal(result?.metrics.llm.reasoning, 93);
+    assert.deepEqual(result?.byModel.map(r => [r.model, r.metrics.events]), [['gemini-3-pro', 2]]);
+    assert.equal(result?.compare.baseline.requests, 2);
+    assert.equal(result?.compare.withJev.requests, 0);
+  });
 });
 
 test('a missing log file reads as null, not as an error', async () => {

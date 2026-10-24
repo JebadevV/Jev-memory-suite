@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   addModelEvent, addRouteEvent, combineMetrics, createAccumulator, createModelAccumulator, estimateCost, finishMetrics,
   finishModels, modelKey, normalizeMode, normalizeReason, recentDecisions, summarizeByModel, summarizeRouteEvents,
-  pathOf, type JevPrice, type LlmPrice,
+  pathOf, chooseLlmPrice, estimateModelCost, isLlmMissing, type JevPrice, type LlmPrice,
 } from '../src/gateway-metrics.js';
 
 // A route event shaped like the upstream log; overrides replace whole top-level fields.
@@ -448,6 +448,53 @@ test('estimateCost treats an unusable price as missing', () => {
   assert.deepEqual(cost.missing, ['llm-price', 'jev-price', 'jev-output-tokens']);
 });
 
+test('estimateCost with zero jev calls and an llm price has total equal to llm, jev 0 and nothing Jev missing', () => {
+  // Arrange: a pass-through route with no Jev object and no Jev call
+  const m = metricsOf([route({ jev: undefined })]);
+  assert.equal(m.jev.calls, 0);
+  assert.equal(m.jev.inputTokens, 0);
+
+  // Act
+  const cost = estimateCost(m, llmPrice);
+
+  // Assert
+  assert.equal(cost.llm, 0.0013);
+  assert.equal(cost.jev, 0);
+  assert.equal(cost.total, cost.llm);
+  assert.deepEqual(cost.missing, []);
+});
+
+test('estimateCost with zero jev calls and no llm price reports only llm-price missing and no total', () => {
+  const m = metricsOf([route({ jev: undefined })]);
+
+  const cost = estimateCost(m);
+
+  assert.deepEqual(cost, { currency: 'USD', llm: null, jev: 0, total: null, missing: ['llm-price'] });
+});
+
+test('estimateCost with zero jev calls ignores a missing jev price', () => {
+  const m = metricsOf([route({ jev: undefined })]);
+
+  const cost = estimateCost(m, llmPrice, undefined);
+
+  assert.equal(cost.jev, 0);
+  assert.equal(cost.total, cost.llm);
+  assert.equal(cost.missing.includes('jev-price'), false);
+  assert.equal(cost.missing.includes('jev-output-tokens'), false);
+});
+
+test('estimateCost with a jev_error (a call with zero tokens) still reports jev price and output tokens missing', () => {
+  // A jev_error is a Jev call even though it has no jev object, so the Jev cost is not known to be 0.
+  const m = metricsOf([route({ reason: 'jev_error: 503', jev: undefined, usage: { input: 1000, output: 50, cached: 0, cacheWrite: 0, reasoning: 0 } })]);
+  assert.equal(m.jev.calls, 1);
+
+  const cost = estimateCost(m, llmPrice);
+
+  assert.equal(cost.jev, null);
+  assert.equal(cost.total, null);
+  assert.deepEqual(cost.missing, ['jev-price', 'jev-output-tokens']);
+});
+
 test('estimateCost does not add reasoning tokens on top of output', () => {
   // One million output tokens cost 15; the same million reasoning tokens must not add another 15.
   const m = metricsOf([route({ usage: { input: 0, output: 1_000_000, cached: 0, cacheWrite: 0, reasoning: 1_000_000 } })]);
@@ -455,6 +502,60 @@ test('estimateCost does not add reasoning tokens on top of output', () => {
   const cost = estimateCost(m, llmPrice);
 
   assert.equal(cost.llm, 15);
+});
+
+const GEMINI_SOURCE = 'https://ai.google.dev/gemini-api/docs/pricing';
+const lite: LlmPrice = { inputPerMTok: 0.3, cacheReadPerMTok: 0.03, cacheWritePerMTok: 0, outputPerMTok: 2.5, currency: 'USD', source: GEMINI_SOURCE, verifiedAt: '2026-10-24' };
+const flash: LlmPrice = { inputPerMTok: 0.75, cacheReadPerMTok: 0.075, cacheWritePerMTok: 0, outputPerMTok: 3.75, currency: 'USD', source: GEMINI_SOURCE, verifiedAt: '2026-10-24', validUntil: '2026-12-31' };
+const geminiPrices: Record<string, LlmPrice> = { 'gemini-3.5-flash-lite': lite, 'gemini-3.8-flash': flash };
+
+test('chooseLlmPrice uses an alias only when its target is priced, and names the alias', () => {
+  assert.deepEqual(chooseLlmPrice(geminiPrices, { 'gemini-3.8-flash-high': 'gemini-3.8-flash' }, 'gemini-3.8-flash-high', '2026-10-24'),
+    { price: flash, aliasedTo: 'gemini-3.8-flash', expired: false });
+  assert.deepEqual(chooseLlmPrice(geminiPrices, { 'model-x': 'gemini-9-unpriced' }, 'model-x', '2026-10-24'), { expired: false });
+  assert.deepEqual(chooseLlmPrice(geminiPrices, { 'gemini-3.5-flash-lite': 'gemini-3.8-flash' }, 'gemini-3.5-flash-lite', '2026-10-24'),
+    { price: lite, expired: false }, 'an own price wins over an alias');
+});
+
+test('chooseLlmPrice uses a price through its validUntil day and not after it', () => {
+  assert.equal(chooseLlmPrice(geminiPrices, undefined, 'gemini-3.8-flash', '2026-12-31').price, flash);
+  assert.deepEqual(chooseLlmPrice(geminiPrices, undefined, 'gemini-3.8-flash', '2027-01-01'), { expired: true });
+});
+
+test('an alias to an expired price is expired, not priced', () => {
+  assert.deepEqual(chooseLlmPrice(geminiPrices, { 'gemini-3.8-flash-high': 'gemini-3.8-flash' }, 'gemini-3.8-flash-high', '2027-01-01'), { expired: true });
+});
+
+test('estimateModelCost names the observed model when its price is missing or expired', () => {
+  const m = metricsOf([route({ usage: { input: 1_000_000, output: 1_000_000, cached: 0, cacheWrite: 0, reasoning: 0 } })]);
+  const unpriced = estimateModelCost('model-x', m, { expired: false });
+  assert.equal(unpriced.llm, null);
+  assert.deepEqual(unpriced.missing, ['llm-price:model-x', 'jev-price', 'jev-output-tokens']);
+  assert.equal(unpriced.aliased, undefined);
+  const expired = estimateModelCost('gemini-3.8-flash', m, { expired: true });
+  assert.deepEqual(expired.missing, ['llm-price-expired:gemini-3.8-flash', 'jev-price', 'jev-output-tokens']);
+  assert.equal(isLlmMissing('llm-price-expired:gemini-3.8-flash'), true);
+  assert.equal(isLlmMissing('jev-price'), false);
+});
+
+test('Gemini 3.5 Flash-Lite costs uncached input, cache read and output; reasoning is not added on top of output', () => {
+  // input 2M of which 1M cached: 1M uncached at 0.30, 1M cache read at 0.03, 1M output at 2.50. Reasoning 0.4M is inside output.
+  const m = metricsOf([route({ usage: { input: 2_000_000, output: 1_000_000, cached: 1_000_000, cacheWrite: 0, reasoning: 400_000 } })]);
+  const cost = estimateModelCost('gemini-3.5-flash-lite', m, chooseLlmPrice(geminiPrices, undefined, 'gemini-3.5-flash-lite', '2026-10-24'));
+  assert.equal(cost.llm, 2.83);
+  assert.equal(cost.aliased, undefined);
+});
+
+test('Gemini 3.8 Flash costs 3.45 for 2M uncached input, 1M cache read and 0.5M output, with reasoning inside output', () => {
+  const m = metricsOf([route({ usage: { input: 3_000_000, output: 500_000, cached: 1_000_000, cacheWrite: 0, reasoning: 200_000 } })]);
+  assert.equal(estimateModelCost('gemini-3.8-flash', m, chooseLlmPrice(geminiPrices, undefined, 'gemini-3.8-flash', '2026-10-24')).llm, 3.45);
+});
+
+test('an aliased model is priced with the target rates and reports the assumed equivalence', () => {
+  const m = metricsOf([route({ usage: { input: 3_000_000, output: 500_000, cached: 1_000_000, cacheWrite: 0, reasoning: 200_000 } })]);
+  const cost = estimateModelCost('gemini-3.8-flash-high', m, chooseLlmPrice(geminiPrices, { 'gemini-3.8-flash-high': 'gemini-3.8-flash' }, 'gemini-3.8-flash-high', '2026-10-24'));
+  assert.equal(cost.llm, 3.45);
+  assert.deepEqual(cost.aliased, { 'gemini-3.8-flash-high': 'gemini-3.8-flash' });
 });
 
 test('modelKey prefers sentModel, then model, and reports unknown when neither is present', () => {

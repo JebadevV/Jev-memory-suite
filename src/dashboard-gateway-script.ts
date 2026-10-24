@@ -6,16 +6,27 @@
 // A failed poll keeps the last values and marks them stale.
 export const dashboardGatewayJs = `
   var GW_POLL_MS = 5000;
-  var GW_CLIENTS = ['claude', 'codex'];
-  var GW_SCOPES = ['claude', 'codex', 'combined'];
-  var GW_NAMES = { claude: 'Claude', codex: 'Codex' };
-  var GW_EXPERIMENTS = { 'default': 'padrão', shadow: 'sombra', metering: 'medição' };
+  var GW_CLIENTS = ['claude', 'codex', 'agy'];
+  var GW_SCOPES = ['claude', 'codex', 'agy', 'combined'];
+  var GW_NAMES = { claude: 'Claude', codex: 'Codex', agy: 'Antigravity' };
+  var GW_EXPERIMENTS = { 'default': 'padrão', shadow: 'sombra', metering: 'medição', passthrough: 'passthrough' };
+  var GW_PASSTHROUGH_NOTE = 'Passthrough: este gateway não roteia pelo Jev.';
+  var GW_NO_COMPARE_PASSTHROUGH = 'Sem comparação com e sem Jev: este gateway roda sempre em passthrough.';
+  var GW_COMBINED_COMPARE_NOTE = 'Somente Claude e Codex entram nesta comparação.';
   var GW_OBS_ROW_KEYS = ['requests', 'jevCalls', 'jevInput', 'jevOutput', 'llmInput', 'cacheRead', 'cacheWrite', 'llmOutput', 'blocking', 'avoided', 'cost', 'period'];
   var GW_MODEL_KEYS = ['requests', 'jevCalls', 'jevInput', 'llmInput', 'cacheRead', 'llmOutput'];
   var GW_MODEL_MAX = 12;
   var GW_PRICE_PREFIX = 'llm-price:';
   var GW_UNPRICED_SHOWN = 3;
   var GW_OUTPUT_NOTE = 'não registrado';
+  var GW_EXPIRED_PREFIX = 'llm-price-expired:';
+  var GW_BILLING_TEXT = {
+    api: 'Cobrança real: API por token',
+    subscription: 'Cobrança real: assinatura (custo por token não se aplica)',
+    unknown: 'Base de cobrança não configurada'
+  };
+  var GW_ALIAS_NOTE = 'preço equivalente assumido';
+  var GW_NO_JEV_PRICE = 'sem preço do Jev';
   var GW_NO_BASELINE = 'Sem baseline no histórico: desligue o roteamento no painel do Jev Gateway por um período para comparar.';
   var GW_COMPARE_ROWS = [
     ['Requisições medidas', 'requests', 'count', false],
@@ -71,20 +82,46 @@ export const dashboardGatewayJs = `
     var shown = names.slice(0, GW_UNPRICED_SHOWN).join(', ');
     return 'sem preço para: ' + shown + (names.length > GW_UNPRICED_SHOWN ? ' +' + (names.length - GW_UNPRICED_SHOWN) : '');
   }
-  // Totals show when priced. Otherwise unpriced models are named; a missing Jev or LLM price says so; anything else stays a dash.
-  function fmtCost(estimate) {
+  // The price of a model's rate is read from the pricing echo for its validity date only; no rate is shown.
+  function priceEntry(model) {
+    var models = field(gwData.pricing, ['models']);
+    return isRecord(models) && hasOwn(models, model) && isRecord(models[model]) ? models[model] : null;
+  }
+  function fmtExpired(missing) {
+    var dates = [];
+    missing.forEach(function (item) {
+      if (item.indexOf(GW_EXPIRED_PREFIX) !== 0) return;
+      var until = field(priceEntry(item.slice(GW_EXPIRED_PREFIX.length)), ['validUntil']);
+      if (typeof until === 'string' && until !== '' && dates.indexOf(until) === -1) dates.push(until);
+    });
+    return dates.length ? 'preço vencido em ' + dates.join(', ') : 'preço vencido';
+  }
+  // Marks an estimate that used an assumed equivalent price (observability.pricing.aliases).
+  function aliasNote(estimate) {
+    var aliased = field(estimate, ['aliased']);
+    return isRecord(aliased) && Object.keys(aliased).length > 0 ? ' · ' + GW_ALIAS_NOTE : '';
+  }
+  // The total shows when priced. Without a Jev price the LLM estimate still shows, marked as such. Otherwise expired rates are
+  // named by their date, unpriced models by unpricedText, and anything else stays a dash.
+  function costText(estimate, unpricedText) {
     if (!isRecord(estimate)) return '—';
-    if (isCount(estimate.total)) return GW_USD.format(estimate.total);
+    if (isCount(estimate.total)) return GW_USD.format(estimate.total) + aliasNote(estimate);
+    if (isCount(estimate.llm)) return GW_USD.format(estimate.llm) + ' (' + GW_NO_JEV_PRICE + ')' + aliasNote(estimate);
     var missing = missingList(estimate);
+    if (missing.some(function (item) { return item.indexOf(GW_EXPIRED_PREFIX) === 0; })) return fmtExpired(missing);
     var names = unpricedModels(missing);
-    if (names.length > 0) return fmtUnpriced(names);
+    if (names.length > 0) return unpricedText(names);
     return missing.indexOf('llm-price') !== -1 || missing.indexOf('jev-price') !== -1 ? 'preço não configurado' : '—';
   }
   // A model's own cell: its price, or "sem preço" when the estimate names that model as unpriced.
   function modelCostText(entry) {
-    var cost = entry.cost;
-    if (isRecord(cost) && isCount(cost.total)) return GW_USD.format(cost.total);
-    return missingList(cost).indexOf(GW_PRICE_PREFIX + entry.model) !== -1 ? 'sem preço' : fmtCost(cost);
+    return costText(entry.cost, function () { return 'sem preço'; });
+  }
+  // The billing line of a card: how the client's tokens are paid for. Empty until the gateway's status has arrived.
+  function billingText(gateway) {
+    if (!isRecord(gateway)) return '';
+    var mode = field(gateway, ['billing']);
+    return hasOwn(GW_BILLING_TEXT, mode) ? GW_BILLING_TEXT[mode] : GW_BILLING_TEXT.unknown;
   }
   function fmtPeriod(metrics) {
     var first = field(metrics, ['firstAt']);
@@ -107,7 +144,7 @@ export const dashboardGatewayJs = `
   };
   // Card rows: calls show their errors, output shows its reasoning share, Jev output is never logged upstream.
   function obsText(key, metrics, cost) {
-    if (key === 'cost') return fmtCost(cost);
+    if (key === 'cost') return costText(cost, fmtUnpriced);
     if (key === 'period') return fmtPeriod(metrics);
     if (key === 'jevOutput') return GW_OUTPUT_NOTE;
     if (key === 'jevCalls') return fmtCount(field(metrics, ['jev', 'calls'])) + ' (' + fmtCount(field(metrics, ['jev', 'errors'])) + ')';
@@ -166,6 +203,8 @@ export const dashboardGatewayJs = `
   }
 
   // Comparison: a row shows the request count, then per-request averages and cache share with and without Jev.
+  // Passthrough clients have no with-Jev side, so their comparison block is hidden and replaced by a note.
+  function setHidden(id, hidden) { $(id).hidden = hidden; }
   function groupEmpty(group) {
     var requests = field(group, ['requests']);
     return !isCount(requests) || requests === 0;
@@ -201,14 +240,19 @@ export const dashboardGatewayJs = `
     return tr;
   }
   function renderCompare(scope, compare) {
-    var withGroup = field(compare, ['withJev']);
-    var baseGroup = field(compare, ['baseline']);
+    var routed = scope !== 'agy';
+    setHidden('obs-' + scope + '-compare-title', !routed);
+    setHidden('obs-' + scope + '-compare-wrap', !routed);
     var body = $('obs-' + scope + '-compare-body');
     clearChildren(body);
+    if (!routed) return setText('obs-' + scope + '-compare-note', GW_NO_COMPARE_PASSTHROUGH);
+    var withGroup = field(compare, ['withJev']);
+    var baseGroup = field(compare, ['baseline']);
     GW_COMPARE_ROWS.forEach(function (row) { body.appendChild(compareRow(row, withGroup, baseGroup)); });
     var note = '';
     if (!isRecord(compare)) note = dataEmptyText('Sem dados de histórico para comparar.');
     else if (field(baseGroup, ['requests']) === 0) note = GW_NO_BASELINE;
+    if (scope === 'combined') note = [note, GW_COMBINED_COMPARE_NOTE].filter(function (part) { return part !== ''; }).join(' ');
     setText('obs-' + scope + '-compare-note', note);
   }
 
@@ -224,7 +268,10 @@ export const dashboardGatewayJs = `
     var view = gwData.polled ? cardView(live) : { tone: 's-idle', label: 'Carregando', note: '' };
     $('obs-' + scope).className = 'card gw-card ' + view.tone;
     setText('obs-' + scope + '-state', view.label);
-    setText('obs-' + scope + '-why', view.note);
+    setText('obs-' + scope + '-why', scope === 'agy' ? (GW_PASSTHROUGH_NOTE + ' ' + view.note).trim() : view.note);
+    var billing = billingText(gateway);
+    setText('obs-' + scope + '-billing', billing);
+    $('obs-' + scope + '-billing').hidden = billing === '';
     renderFacts(scope, gateway, gateway);
   }
   // Combined: the running count names how many gateways answer; the experiments of both clients are listed.
@@ -250,8 +297,10 @@ export const dashboardGatewayJs = `
   function priceNote(label, entry) {
     var source = field(entry, ['source']);
     var verified = field(entry, ['verifiedAt']);
+    var until = field(entry, ['validUntil']);
     return label + ': ' + (typeof source === 'string' && source !== '' ? source : '—') +
-      ' (verificado em ' + (typeof verified === 'string' && verified !== '' ? verified : '—') + ')';
+      ' (verificado em ' + (typeof verified === 'string' && verified !== '' ? verified : '—') + ')' +
+      (typeof until === 'string' && until !== '' ? ' (válido até ' + until + ')' : '');
   }
   // Priced models in the server's order, then the Jev price when configured.
   function pricingParts(pricing) {

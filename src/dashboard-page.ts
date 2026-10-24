@@ -23,7 +23,7 @@ ${aggregator ? gatewayFrame(aggregator) : gatewayFallback()}`;
 
 // Column headers of the per-model table; the script fills one row per model (max 12) in the matching order.
 const MODEL_COLUMNS: readonly string[] = ['Modelo', 'Requisições', 'Chamadas Jev', 'Tokens entrada Jev', 'LLM não cacheada',
-  'Cache leitura', 'LLM saída', 'Custo est. (USD)'];
+  'Cache leitura', 'LLM saída', 'Estimativa de preço de API (USD)'];
 
 // History values only: the launcher log, which the upstream window does not keep. Keys match the script's OBS_ROW_KEYS.
 const OBS_ROWS: readonly (readonly [string, string])[] = [
@@ -37,7 +37,7 @@ const OBS_ROWS: readonly (readonly [string, string])[] = [
   ['llmOutput', 'LLM saída (raciocínio)'],
   ['blocking', 'Latência adicionada pelo Jev (total)'],
   ['avoided', 'Chamadas LLM evitadas (direct)'],
-  ['cost', 'Custo estimado (USD)'],
+  ['cost', 'Estimativa de preço de API (USD)'],
   ['period', 'Período'],
 ];
 
@@ -50,7 +50,7 @@ const modelTable = (scope: string, label: string): string => `<div class="gw-tab
     <p class="empty" id="obs-${scope}-models-empty" hidden></p>`;
 
 // Compare rows are filled by the script: request count, per-request averages and cache share, with and without Jev.
-const compareTable = (scope: string, label: string): string => `<div class="gw-table-wrap">
+const compareTable = (scope: string, label: string): string => `<div class="gw-table-wrap" id="obs-${scope}-compare-wrap">
       <table class="gw-table gw-compare" aria-label="${escapeHtml(`Comparação com e sem Jev do ${label}`)}">
         <thead><tr><th scope="col">Métrica</th><th scope="col">Com Jev</th><th scope="col">Baseline</th><th scope="col">Diferença</th></tr></thead>
         <tbody id="obs-${scope}-compare-body"></tbody>
@@ -64,13 +64,14 @@ const obsCard = (scope: string, label: string, wide: boolean): string => `<artic
       <div class="state" id="obs-${scope}-state">Carregando</div>
       <p class="why" id="obs-${scope}-why"></p>
       <p class="why">Experimento: <span id="obs-${scope}-experiment">—</span></p>
+      ${scope === 'combined' ? '' : `<p class="why" id="obs-${scope}-billing" hidden></p>`}
     </div>
     <dl class="gw-metrics">
       ${OBS_ROWS.map(([key, text]) => `<div><dt>${text}</dt><dd id="obs-${scope}-${key}">—</dd></div>`).join('\n      ')}
     </dl>
     <h4 class="gw-sub">Por modelo</h4>
     ${modelTable(scope, label)}
-    <h4 class="gw-sub">Com Jev × Baseline (histórico)</h4>
+    <h4 class="gw-sub" id="obs-${scope}-compare-title">Com Jev × Baseline (histórico)</h4>
     ${compareTable(scope, label)}
   </article>`;
 
@@ -82,7 +83,8 @@ const observabilitySection = `<section class="card gw-section" id="token-observa
   <div class="gw-grid">
     ${obsCard('claude', 'Claude', false)}
     ${obsCard('codex', 'Codex', false)}
-    ${obsCard('combined', 'Combinado (Claude + Codex)', true)}
+    ${obsCard('agy', 'Antigravity', false)}
+    ${obsCard('combined', 'Combinado (Claude + Codex + Antigravity)', true)}
   </div>
   <p class="meta gw-disclaimer">Custos são estimativas de preço de API com base nos preços configurados em observability.pricing; não representam cobrança de assinatura nem economia confirmada. Tokens de saída do Jev não são registrados pelo gateway.</p>
   <p class="meta" id="gw-pricing">Carregando preços…</p>

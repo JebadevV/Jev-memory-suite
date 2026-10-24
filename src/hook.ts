@@ -142,9 +142,14 @@ function spawnHook(name: string, port: number, agent: string, event: string, cwd
   });
 }
 // Breadcrumb for the dashboard live feed: the session id only, never hook content.
+// The legacy file keeps the last writer for older readers; one file per agent lets the feed show each active client.
 export const ACTIVE_SESSION_FILE = 'active-session';
-export async function recordActiveSession(dir: string, sessionId: string): Promise<void> {
-  const file = resolve(dir, ACTIVE_SESSION_FILE), tmp = `${file}.${randomBytes(6).toString('hex')}.tmp`; // Unique temp name: parallel subagent hooks must not share one.
+export const ACTIVE_SESSION_AGENTS = agents;
+export type ActiveSessionAgent = Agent;
+export const isActiveSessionAgent = (value: unknown): value is ActiveSessionAgent => typeof value === 'string' && (agents as readonly string[]).includes(value);
+export const activeSessionFile = (agent: ActiveSessionAgent): string => `${ACTIVE_SESSION_FILE}.${agent}`;
+async function writeSessionId(file: string, sessionId: string): Promise<void> {
+  const tmp = `${file}.${randomBytes(6).toString('hex')}.tmp`; // Unique temp name: parallel subagent hooks must not share one.
   try {
     await writeFile(tmp, sessionId, { mode: 0o600, flag: 'wx' });
     await rename(tmp, file); // Rename keeps readers from seeing a half-written id.
@@ -152,6 +157,22 @@ export async function recordActiveSession(dir: string, sessionId: string): Promi
     // Best effort: a missing breadcrumb only hides toasts, so it must never block capture.
     await unlink(tmp).catch(() => undefined); // Never leave a stray temp file behind.
   }
+}
+export async function recordActiveSession(dir: string, sessionId: string, agent?: string): Promise<void> {
+  await writeSessionId(resolve(dir, ACTIVE_SESSION_FILE), sessionId);
+  if (isActiveSessionAgent(agent)) await writeSessionId(resolve(dir, activeSessionFile(agent)), sessionId);
+}
+// Compare-and-delete: a file is removed only while it still holds this session, so an id another client wrote since is preserved.
+async function clearSessionId(file: string, sessionId: string): Promise<void> {
+  try {
+    if ((await readFile(file, 'utf8')).trim() === sessionId) await unlink(file);
+  } catch {
+    // Best effort: a breadcrumb that cannot be cleared only leaves the feed as it was, and a missing file is already clear.
+  }
+}
+export async function clearActiveSession(dir: string, agent: ActiveSessionAgent, sessionId: string): Promise<void> {
+  await clearSessionId(resolve(dir, activeSessionFile(agent)), sessionId);
+  await clearSessionId(resolve(dir, ACTIVE_SESSION_FILE), sessionId);
 }
 // Pure: the host only ever sees the native engine output for events that can carry a decision.
 export function hookOutput(event: string, nativeStdout: string): string {
@@ -206,10 +227,15 @@ async function captureNative(name: string, agent: string, event: string, payload
   const c = await readConfig(name); if (!c.memory.enabled) { await logHookSkip(name, agent, event, 'memory-disabled'); return ''; }
   const safePayload = await parseHookPayload(agent, event, payload, c.projectRoot ?? root);
   if (!(await projectScopeMarker(String(safePayload.cwd), c))) { await logHookSkip(name, agent, event, 'no-scope-marker'); return ''; }
-  await recordActiveSession(profileDir(name), String(safePayload.session_id));
+  await recordActiveSession(profileDir(name), String(safePayload.session_id), agent);
   const launchId = process.env[AGY_LAUNCH_ENV];
   if (agent === 'antigravity-cli' && launchId) await recordLaunchSession(profileDir(name), launchId, String(safePayload.session_id));
-  return spawnHook(name, c.memory.port, agent, event, String(safePayload.cwd), safePayload);
+  try {
+    return await spawnHook(name, c.memory.port, agent, event, String(safePayload.cwd), safePayload);
+  } finally {
+    // Cleared even when the native hook fails, so a session that ended cannot stay on the feed.
+    if (event === 'session-end' && isActiveSessionAgent(agent)) await clearActiveSession(profileDir(name), agent, String(safePayload.session_id));
+  }
 }
 export async function nativeHook(name: string, agent: string, event: string, payload: unknown): Promise<string> {
   // A spawn failure rejects here, so the discarded stdout of silent events never hides an error.

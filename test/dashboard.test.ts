@@ -2,7 +2,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { request, createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { summarize, summarizeFeed, dashboardHandler, mergeProjectFeeds, type MemoryFeed, type FeedItem } from '../src/dashboard.js';
+import { mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  summarize, summarizeFeed, dashboardHandler, mergeProjectFeeds, buildFeed, readActiveSessions, feedAgentOf, ACTIVE_SESSION_STALE_MS,
+  type MemoryFeed, type FeedItem, type FeedAgent, type FeedSession,
+} from '../src/dashboard.js';
 import type { ProjectEntry } from '../src/dashboard-projects.js';
 import {
   aggregatorFor, emptySnapshot, type GatewayProbe, type GatewaySnapshot, type GatewayStatus, type UpstreamClient, type UpstreamGateway,
@@ -27,15 +33,16 @@ function briefing(recentCount: number, titleLength = 10) {
   };
 }
 
-const emptyFeed = async (): Promise<MemoryFeed> => ({ ok: true, sessionId: null, items: [] });
+const emptyFeed = async (): Promise<MemoryFeed> => ({ ok: true, sessionId: null, items: [], sessions: [] });
 const oneProject = async (): Promise<ProjectEntry[]> => [{ id: 'default', label: 'jev-memory-suite' }];
-const PORTS: Record<UpstreamClient, number> = { claude: 19789, codex: 19790 };
+const PORTS: Record<UpstreamClient, number> = { claude: 19789, codex: 19790, agy: 19794 };
+const LABELS: Record<UpstreamClient, string> = { claude: 'Claude', codex: 'Codex', agy: 'Antigravity' };
 const ROUTER = { routing: true, shadow: false, minConfidence: null, recorded: 0, startedAt: null, upstream: null, jevModel: null, jevProvider: null };
 
 // The gateway as the port spec resolves it; origin is loopback like the real check.
 function gatewayOf(client: UpstreamClient, port: number): UpstreamGateway {
   return {
-    client, label: client === 'claude' ? 'Claude' : 'Codex', portEnv: `JEV_${client.toUpperCase()}_PORT`, port,
+    client, label: LABELS[client], portEnv: `JEV_${client.toUpperCase()}_PORT`, port,
     source: 'installed', portValid: true, origin: `http://127.0.0.1:${port}`, dashboardUrl: `http://localhost:${port}/dashboard`,
   };
 }
@@ -43,19 +50,21 @@ function gatewayOf(client: UpstreamClient, port: number): UpstreamGateway {
 // A gateway status as the real check reports it for a running or stopped gateway.
 function statusOf(client: UpstreamClient, running: boolean, port: number): GatewayStatus {
   return {
-    client, label: client === 'claude' ? 'Claude' : 'Codex', port, portValid: true,
+    client, label: LABELS[client], port, portValid: true,
     state: running ? 'running' : 'stopped', metrics: running ? 'ok' : 'offline',
     router: running ? ROUTER : null, history: null, historyCompare: null,
     cost: { history: null }, models: { history: [] }, experiment: 'default',
+    billing: client === 'agy' ? 'subscription' : 'unknown',
   };
 }
 
 // The snapshot the real check builds: the aggregator comes from the same probe states through aggregatorFor.
 function snapshotWith(running: UpstreamClient[], ports: Record<UpstreamClient, number> = PORTS): GatewaySnapshot {
-  const gateways = (['claude', 'codex'] as const).map(client => gatewayOf(client, ports[client]));
+  const gateways = (['claude', 'codex', 'agy'] as const).map(client => gatewayOf(client, ports[client]));
   const states: Partial<Record<UpstreamClient, GatewayProbe['state']>> = {
     claude: running.includes('claude') ? 'running' : 'stopped',
     codex: running.includes('codex') ? 'running' : 'stopped',
+    agy: running.includes('agy') ? 'running' : 'stopped',
   };
   const aggregator = aggregatorFor(gateways, states);
   return {
@@ -175,7 +184,7 @@ test('summarizeFeed rejects a response without an observations array', () => {
 });
 
 test('memory feed returns merged items tagged with their project and no-store JSON headers', async () => {
-  const item: FeedItem = { id: 'o1', kind: 'post-tool-use', title: 'Bash', body: 'ls', createdAt: null };
+  const item: FeedItem = { id: 'o1', kind: 'post-tool-use', title: 'Bash', body: 'ls', createdAt: null, agent: 'claude-code', agentLabel: 'Claude' };
   await withDashboard(async () => summarize(briefing(0)), async port => {
     const reply = await call(port, '/memory/feed');
     assert.equal(reply.status, 200);
@@ -183,7 +192,7 @@ test('memory feed returns merged items tagged with their project and no-store JS
     assert.equal(reply.headers['cache-control'], 'no-store');
     assert.equal(reply.headers['x-content-type-options'], 'nosniff');
     assert.deepEqual(JSON.parse(reply.body), { ok: true, items: [{ ...item, projectId: 'default', projectLabel: 'jev-memory-suite' }] });
-  }, async () => ({ ok: true, sessionId: 'sess-1', items: [item] }));
+  }, async () => ({ ok: true, sessionId: 'sess-1', items: [item], sessions: [{ agent: 'claude-code', sessionId: 'sess-1' }] }));
 });
 
 test('a request to the feed route with a foreign Host header is rejected with 403', async () => {
@@ -255,7 +264,7 @@ test('index page frames the claude aggregator alone when codex is not running', 
 });
 
 test('index page reflects custom gateway ports in its frame policy and its one iframe', async () => {
-  const custom = async () => snapshotWith(['claude', 'codex'], { claude: 18789, codex: 18790 });
+  const custom = async () => snapshotWith(['claude', 'codex'], { claude: 18789, codex: 18790, agy: 18794 });
   await withDashboard(async () => summarize(briefing(0)), async port => {
     const reply = await call(port, '/');
     const csp = String(reply.headers['content-security-policy']);
@@ -379,25 +388,161 @@ test('memory summary passes a listed project id through', async () => {
 });
 
 test('memory feed restricted to one project rejects an unknown id and tags items with the project', async () => {
-  const item: FeedItem = { id: 'o1', kind: 'stop', title: 'T', body: '', createdAt: '2026-10-22T10:00:00Z' };
+  const item: FeedItem = { id: 'o1', kind: 'stop', title: 'T', body: '', createdAt: '2026-10-22T10:00:00Z', agent: 'codex', agentLabel: 'Codex' };
   await withDashboard(async () => summarize(briefing(0)), async port => {
     const bad = await call(port, '/memory/feed?project=nope');
     assert.equal(bad.status, 400);
     const ok = await call(port, '/memory/feed?project=project-abc');
     assert.deepEqual(JSON.parse(ok.body), { ok: true, items: [{ ...item, projectId: 'project-abc', projectLabel: 'example-app' }] });
-  }, async () => ({ ok: true, sessionId: 's', items: [item] }), async () => twoProjects);
+  }, async () => ({ ok: true, sessionId: 's', items: [item], sessions: [] }), async () => twoProjects);
 });
 
 test('mergeProjectFeeds sorts newest first across projects and caps the total at 30', () => {
   const project: ProjectEntry = { id: 'p', label: 'P' };
   const items: FeedItem[] = Array.from({ length: 40 }, (_, i) => ({
-    id: `i${i}`, kind: 'stop', title: '', body: '', createdAt: new Date(Date.UTC(2026, 9, 22, 0, i)).toISOString(),
+    id: `i${i}`, kind: 'stop', title: '', body: '', agent: 'codex', agentLabel: 'Codex', createdAt: new Date(Date.UTC(2026, 9, 22, 0, i)).toISOString(),
   }));
-  const merged = mergeProjectFeeds([{ project, items }, { project: { id: 'q', label: 'Q' }, items: [{ id: 'x', kind: 'stop', title: '', body: '', createdAt: null }] }]);
+  const merged = mergeProjectFeeds([{ project, items }, { project: { id: 'q', label: 'Q' }, items: [{ id: 'x', kind: 'stop', title: '', body: '', agent: 'unknown', agentLabel: 'Desconhecido', createdAt: null }] }]);
   assert.equal(merged.length, 30);
   assert.equal(merged[0]?.id, 'i39');
   assert.equal(merged[0]?.projectLabel, 'P');
+  assert.equal(merged[0]?.agentLabel, 'Codex');
   assert.equal(merged.some(i => i.id === 'x'), false);
+});
+
+test('mergeProjectFeeds keeps each item\'s client label when projects are combined', () => {
+  const merged = mergeProjectFeeds([
+    { project: { id: 'a', label: 'A' }, items: [{ id: 'c', kind: 'stop', title: '', body: '', agent: 'claude-code', agentLabel: 'Claude', createdAt: '2026-10-22T10:00:00Z' }] },
+    { project: { id: 'b', label: 'B' }, items: [{ id: 'g', kind: 'stop', title: '', body: '', agent: 'antigravity-cli', agentLabel: 'Antigravity', createdAt: '2026-10-22T10:01:00Z' }] },
+  ]);
+  assert.deepEqual(merged.map(i => [i.projectLabel, i.agent, i.agentLabel]), [['B', 'antigravity-cli', 'Antigravity'], ['A', 'claude-code', 'Claude']]);
+});
+
+const observation = (id: string, createdAt: string) => ({ id, kind: 'stop', title: id, body: '', created_at: createdAt });
+
+test('summarizeFeed labels items with the engine session kind, then the file agent, then unknown', () => {
+  const labelOf = (session: unknown, fileAgent?: FeedAgent) => summarizeFeed({ session, observations: [observation('o1', '2026-10-22T10:00:00Z')] }, fileAgent)[0];
+  assert.equal(labelOf({ agent_kind: 'antigravity-cli' }, 'claude-code')?.agent, 'antigravity-cli');
+  assert.equal(labelOf({ agent_kind: 'antigravity-cli' }, 'claude-code')?.agentLabel, 'Antigravity');
+  assert.equal(labelOf({}, 'codex')?.agent, 'codex');
+  assert.equal(labelOf(undefined, 'claude-code')?.agentLabel, 'Claude');
+  assert.equal(labelOf(undefined)?.agent, 'unknown');
+  assert.equal(labelOf(undefined)?.agentLabel, 'Desconhecido');
+  assert.equal(labelOf({ agent_kind: 'mystery-agent' }, 'codex')?.agent, 'codex', 'an unrecognised kind falls back to the file name');
+  assert.equal(labelOf({ agent_kind: 42 })?.agent, 'unknown', 'a malformed kind does not fail the feed');
+  assert.equal(feedAgentOf('codex', 'claude-code'), 'codex');
+});
+
+test('buildFeed shows Claude and Antigravity sessions active at the same time, newest first, each with its own label', async () => {
+  const replies: Record<string, unknown> = {
+    'sess-claude': { session: { agent_kind: 'claude-code' }, observations: [observation('c2', '2026-10-22T10:02:00Z'), observation('c1', '2026-10-22T10:00:00Z')] },
+    'sess-agy': { session: { agent_kind: 'antigravity-cli' }, observations: [observation('a1', '2026-10-22T10:01:00Z')] },
+  };
+  const read: string[] = [];
+  const feed = await buildFeed(
+    [{ agent: 'claude-code', sessionId: 'sess-claude' }, { agent: 'antigravity-cli', sessionId: 'sess-agy' }],
+    async sessionId => { read.push(sessionId); return replies[sessionId]; },
+  );
+  assert.deepEqual([...read].sort(), ['sess-agy', 'sess-claude']);
+  assert.deepEqual(feed.items.map(i => [i.id, i.agent, i.agentLabel]), [
+    ['c2', 'claude-code', 'Claude'], ['a1', 'antigravity-cli', 'Antigravity'], ['c1', 'claude-code', 'Claude'],
+  ]);
+  assert.deepEqual(feed.sessions, [{ agent: 'claude-code', sessionId: 'sess-claude' }, { agent: 'antigravity-cli', sessionId: 'sess-agy' }]);
+  assert.equal(feed.sessionId, 'sess-claude');
+});
+
+test('buildFeed reads each session id once and keeps the merged feed to the newest ten', async () => {
+  const reads: string[] = [];
+  const batch = (kind: string, offset: number) => ({
+    session: { agent_kind: kind },
+    observations: Array.from({ length: 8 }, (_, i) => observation(`${kind}-${i}`, new Date(Date.UTC(2026, 9, 22, 0, offset + i)).toISOString())),
+  });
+  const feed = await buildFeed(
+    [{ agent: 'claude-code', sessionId: 's1' }, { agent: 'codex', sessionId: 's2' }, { agent: 'codex', sessionId: 's1' }],
+    async sessionId => { reads.push(sessionId); return sessionId === 's1' ? batch('claude-code', 0) : batch('codex', 100); },
+  );
+  assert.deepEqual(reads.sort(), ['s1', 's2']);
+  assert.equal(feed.items.length, 10);
+  assert.equal(feed.items.filter(i => i.agent === 'codex').length, 8);
+  assert.equal(feed.items.filter(i => i.agent === 'claude-code').length, 2);
+});
+
+test('buildFeed without active sessions returns an empty feed', async () => {
+  assert.deepEqual(await buildFeed([], async () => { throw new Error('must not read'); }), { ok: true, sessionId: null, items: [], sessions: [] });
+});
+
+test('readActiveSessions takes the valid per-agent ids, ignores invalid ones and falls back to the legacy file', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'jev-feed-'));
+  try {
+    assert.deepEqual(await readActiveSessions(dir), []);
+    await writeFile(join(dir, 'active-session'), 'legacy-1');
+    assert.deepEqual(await readActiveSessions(dir), [{ agent: 'unknown', sessionId: 'legacy-1' }]);
+    await writeFile(join(dir, 'active-session.claude-code'), 'sess-claude\n');
+    await writeFile(join(dir, 'active-session.antigravity-cli'), 'bad id with spaces');
+    await writeFile(join(dir, 'active-session.codex'), '../../etc');
+    assert.deepEqual(await readActiveSessions(dir), [{ agent: 'claude-code', sessionId: 'sess-claude' }]);
+    await rm(join(dir, 'active-session.claude-code'));
+    assert.deepEqual(await readActiveSessions(dir), [{ agent: 'unknown', sessionId: 'legacy-1' }], 'only invalid per-agent files means the legacy file is used');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('readActiveSessions ignores a per-agent file older than the stale window and keeps a recent one', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'jev-feed-'));
+  try {
+    const now = Date.now();
+    const old = new Date(now - ACTIVE_SESSION_STALE_MS - 60_000), recent = new Date(now - 60_000);
+    await writeFile(join(dir, 'active-session.claude-code'), 'sess-old');
+    await utimes(join(dir, 'active-session.claude-code'), old, old);
+    await writeFile(join(dir, 'active-session.codex'), 'sess-recent');
+    await utimes(join(dir, 'active-session.codex'), recent, recent);
+    assert.deepEqual(await readActiveSessions(dir, now), [{ agent: 'codex', sessionId: 'sess-recent' }]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('readActiveSessions ignores a stale legacy file and reads a recent one', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'jev-feed-'));
+  try {
+    const now = Date.now();
+    const old = new Date(now - ACTIVE_SESSION_STALE_MS - 60_000), recent = new Date(now - 60_000);
+    await writeFile(join(dir, 'active-session'), 'legacy-old');
+    await utimes(join(dir, 'active-session'), old, old);
+    assert.deepEqual(await readActiveSessions(dir, now), []);
+    await utimes(join(dir, 'active-session'), recent, recent);
+    assert.deepEqual(await readActiveSessions(dir, now), [{ agent: 'unknown', sessionId: 'legacy-old' }]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('readActiveSessions lists every agent with a valid file, in agent order', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'jev-feed-'));
+  try {
+    await writeFile(join(dir, 'active-session.antigravity-cli'), 'sess-agy');
+    await writeFile(join(dir, 'active-session.codex'), 'sess-codex');
+    await writeFile(join(dir, 'active-session'), 'sess-legacy');
+    const sessions: FeedSession[] = await readActiveSessions(dir);
+    assert.deepEqual(sessions, [{ agent: 'codex', sessionId: 'sess-codex' }, { agent: 'antigravity-cli', sessionId: 'sess-agy' }]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('memory feed route returns items from simultaneous sessions with their client labels', async () => {
+  const feed = await buildFeed(
+    [{ agent: 'claude-code', sessionId: 'sess-claude' }, { agent: 'antigravity-cli', sessionId: 'sess-agy' }],
+    async sessionId => sessionId === 'sess-claude'
+      ? { session: { agent_kind: 'claude-code' }, observations: [observation('c1', '2026-10-22T10:00:00Z')] }
+      : { session: { agent_kind: 'antigravity-cli' }, observations: [observation('a1', '2026-10-22T10:01:00Z')] },
+  );
+  await withDashboard(async () => summarize(briefing(0)), async port => {
+    const reply = await call(port, '/memory/feed');
+    assert.deepEqual(JSON.parse(reply.body).items.map((i: FeedItem) => [i.id, i.agentLabel]), [['a1', 'Antigravity'], ['c1', 'Claude']]);
+  }, async () => feed);
+});
+
+test('panel script prefixes each toast with the client label through textContent only', async () => {
+  await withDashboard(async () => summarize(briefing(0)), async port => {
+    const reply = await call(port, '/app.js');
+    assert.match(reply.body, /dash\(item\.agentLabel\) \+ ' · ' \+ dash\(item\.projectLabel\)/);
+    assert.match(reply.body, /project\.textContent = /);
+    assert.doesNotMatch(reply.body, /innerHTML|outerHTML|insertAdjacentHTML/);
+  });
 });
 
 test('panel script reads and writes the project choice only inside try/catch', async () => {
@@ -420,11 +565,12 @@ test('gateways status returns ok with per-client statuses, combined totals and p
     assert.equal(reply.headers['content-type'], 'application/json; charset=utf-8');
     const body = JSON.parse(reply.body);
     assert.equal(body.ok, true);
-    assert.deepEqual(body.gateways.map((g: GatewayStatus) => [g.client, g.state, g.metrics]), [['claude', 'running', 'ok'], ['codex', 'running', 'ok']]);
+    assert.deepEqual(body.gateways.map((g: GatewayStatus) => [g.client, g.state, g.metrics]), [['claude', 'running', 'ok'], ['codex', 'running', 'ok'], ['agy', 'stopped', 'offline']]);
     assert.deepEqual(Object.keys(body.combined).sort(), ['cost', 'history', 'historyCompare', 'models']);
     assert.ok(body.combined.history);
     assert.ok(body.combined.cost.history);
     assert.deepEqual(body.pricing, { models: {}, jev: null });
+    assert.deepEqual(body.gateways.map((g: GatewayStatus) => g.billing), ['unknown', 'unknown', 'subscription']);
   });
 });
 

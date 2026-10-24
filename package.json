@@ -16,15 +16,15 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src test",
-    "test": "tsx --test test/*.test.ts",
+    "test": "node scripts/test-isolated.mjs --real-uv-tools",
     "suite": "node bin/jev-memory.mjs",
-    "test:e2e": "tsx --test --test-concurrency=1 test/e2e.ts",
-    "test:projects": "tsx --test --test-concurrency=1 test/projects-e2e.ts",
-    "test:semantic": "tsx --test --test-concurrency=1 test/semantic-e2e.ts",
-    "test:headroom": "tsx --test --test-concurrency=1 test/headroom-e2e.ts",
-    "test:headroom-codex": "tsx --test --test-concurrency=1 test/headroom-codex-e2e.ts",
-    "test:claude-launch": "tsx --test --test-concurrency=1 test/claude-launch-e2e.ts",
-    "test:codex-launch": "tsx --test --test-concurrency=1 test/codex-launch-e2e.ts"
+    "test:e2e": "node scripts/test-isolated.mjs --test-concurrency=1 test/e2e.ts",
+    "test:projects": "node scripts/test-isolated.mjs --test-concurrency=1 test/projects-e2e.ts",
+    "test:semantic": "node scripts/test-isolated.mjs --test-concurrency=1 test/semantic-e2e.ts",
+    "test:headroom": "node scripts/test-isolated.mjs --test-concurrency=1 --real-uv-tools test/headroom-e2e.ts",
+    "test:headroom-codex": "node scripts/test-isolated.mjs --test-concurrency=1 --real-uv-tools test/headroom-codex-e2e.ts",
+    "test:claude-launch": "node scripts/test-isolated.mjs --test-concurrency=1 test/claude-launch-e2e.ts",
+    "test:codex-launch": "node scripts/test-isolated.mjs --test-concurrency=1 --real-uv-tools test/codex-launch-e2e.ts"
   },
   "dependencies": {
     "smol-toml": "1.9.1",

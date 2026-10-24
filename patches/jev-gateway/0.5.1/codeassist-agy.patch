@@ -1,0 +1,2503 @@
+diff --git a/bin/clients.mjs b/bin/clients.mjs
+index f418535..d479cef 100644
+--- a/bin/clients.mjs
++++ b/bin/clients.mjs
+@@ -351,3 +351,21 @@ export const gemini = {
+     `#   GEMINI_API_BASE=${origin}\n` +
+     `#   or endpoint: ${origin}/v1beta\n`,
+ };
++
++// agy (Antigravity CLI) sends its Code Assist calls to CLOUD_CODE_URL. The gateway forwards them with
++// the user's own Google token, so it only ever talks to the Code Assist hosts (see src/codeassist.ts).
++export const agy = {
++  name: "jev-agy",
++  client: "agy",
++  portEnv: "JEV_AGY_PORT",
++  defaultPort: 8794,
++  upstream: () => process.env.JEV_AGY_UPSTREAM_BASE_URL ?? "https://daily-cloudcode-pa.googleapis.com",
++  upstreamHelp: "JEV_AGY_UPSTREAM_BASE_URL     where agy traffic goes (default https://daily-cloudcode-pa.googleapis.com)",
++  // agy needs no Jev key: launcher.mjs never asks for one. The gateway enforces this on its side too:
++  // loadConfig forces routing off and refuses shadow when JEV_CLIENT=agy, so the router never calls Jev.
++  passthroughOnly: true,
++  env: (origin) => ({ CLOUD_CODE_URL: origin }),
++  configHelp: (origin) =>
++    `# Keep the gateway running (jev-agy --start), then:\n` +
++    `#   CLOUD_CODE_URL=${origin} agy\n`,
++};
+diff --git a/bin/jev-agy.mjs b/bin/jev-agy.mjs
+new file mode 100644
+index 0000000..0ebb73e
+--- /dev/null
++++ b/bin/jev-agy.mjs
+@@ -0,0 +1,6 @@
++#!/usr/bin/env node
++// jev-agy: run the Antigravity CLI (agy) through a local jev-gateway.
++import { agy } from "./clients.mjs";
++import { runLauncher } from "./launcher.mjs";
++
++await runLauncher(agy);
+diff --git a/bin/launcher.mjs b/bin/launcher.mjs
+index c5d299a..0be19a2 100644
+--- a/bin/launcher.mjs
++++ b/bin/launcher.mjs
+@@ -29,6 +29,7 @@ const ENV_FILES = [...(FROM_SOURCE && !process.env.JEV_SKIP_PROJECT_ENV ? [join(
+  * @param {(origin: string, argv: string[]) => Promise<string[]>} [spec.notices]  what the user should
+  *   know before this session starts, e.g. traffic that will not reach the gateway; never throws
+  * @param {(origin: string) => string} spec.configHelp  how to wire the client up permanently
++ * @param {boolean} [spec.passthroughOnly]  the client needs no Jev key (agy): nothing here asks for one
+  */
+ /** Load the key for Jev and friends; real environment variables win over both files. */
+ export function loadEnv() {
+@@ -50,6 +51,9 @@ export async function runLauncher(spec) {
+   const providerLabels = Object.values(providers).map((p) => p.label).join(", ");
+   const providerKeys = Object.values(providers).map((p) => p.keyEnv);
+   const keysList = `${providerKeys.slice(0, -1).join(", ")} or ${providerKeys.at(-1)}`;
++  const keyHelp = spec.passthroughOnly
++    ? `  No Jev key is needed: ${spec.client} keeps its own login, and its requests never go to Jev.`
++    : `  A key for Jev is required. ${spec.name} asks for it the first time and saves it; it can be\n  ${keysList} (JEV_PROVIDER picks when several are set)`;
+ 
+   const help = `${spec.name}: ${spec.client} with tool selection routed through Jev
+ 
+@@ -65,8 +69,7 @@ export async function runLauncher(spec) {
+   ${spec.name} --gateway-help     this text (\`--help\` shows ${spec.client}'s own help)
+ 
+ Environment (or ${ENV_FILES.at(-1)}):
+-  A key for Jev is required. ${spec.name} asks for it the first time and saves it; it can be
+-  ${keysList} (JEV_PROVIDER picks when several are set)
++${keyHelp}
+   ${spec.portEnv}   router port for ${spec.client} (default ${spec.defaultPort})
+   ${spec.upstreamHelp}
+   BROWSER            command --dashboard opens the page with; "none" only prints the URL
+@@ -138,7 +141,9 @@ Environment (or ${ENV_FILES.at(-1)}):
+       console.error(`${" ".repeat(spec.name.length)}  Run \`${spec.name} --stop\` and try again.`);
+       process.exit(1);
+     }
+-    await ensureKey();
++    // passthroughOnly clients (agy) never reach Jev: loadConfig forces routing off and refuses shadow
++    // for them, so no Jev key is asked for or needed.
++    if (!spec.passthroughOnly) await ensureKey();
+ 
+     mkdirSync(STATE_DIR, { recursive: true });
+     const log = openSync(logFile, "a");
+@@ -216,6 +221,9 @@ Environment (or ${ENV_FILES.at(-1)}):
+   const flag = LEGACY[first] ?? first?.replace(/^--jev-(?=dashboard$|routing$|status$|logs$|start$|stop$)/, "--");
+   if (flag === "--gateway-help") return console.log(help);
+   if (flag === "--setup") {
++    if (spec.passthroughOnly) {
++      return console.log(`${spec.name}: no Jev key is needed. ${spec.client} signs in with its own account and its requests are only forwarded and counted, never sent to Jev.`);
++    }
+     if (!process.stdin.isTTY) return console.error(`${spec.name}: --setup asks questions, so it needs a terminal.`);
+     await setup();
+     // A gateway that is already running read the old key when it started.
+@@ -256,10 +264,14 @@ Environment (or ${ENV_FILES.at(-1)}):
+     } else {
+       console.log(`${spec.name}: health not confirmed on ${origin} (${failure})`);
+     }
+-    const configured = configuredProvider(process.env, providers);
+-    console.log(configured
+-      ? `CLI key: ${providers[configured].label} (${providers[configured].keyEnv})`
+-      : `CLI key: none configured for the local provider, run \`${spec.name} --setup\``);
++    if (spec.passthroughOnly) {
++      console.log(`CLI key: not used, ${spec.client} signs in with its own account`);
++    } else {
++      const configured = configuredProvider(process.env, providers);
++      console.log(configured
++        ? `CLI key: ${providers[configured].label} (${providers[configured].keyEnv})`
++        : `CLI key: none configured for the local provider, run \`${spec.name} --setup\``);
++    }
+     console.log(`logs: ${logFile}`);
+     for (const line of await notices(process.argv.slice(3))) console.log(line);
+     return;
+diff --git a/package.json b/package.json
+index 5bee32e..2ed7764 100644
+--- a/package.json
++++ b/package.json
+@@ -38,7 +38,8 @@
+     "jev-opencode": "bin/jev-opencode.mjs",
+     "jev-gemini": "bin/jev-gemini.mjs",
+     "jev-devin": "bin/jev-devin.mjs",
+-    "jev-kilo": "bin/jev-kilo.mjs"
++    "jev-kilo": "bin/jev-kilo.mjs",
++    "jev-agy": "bin/jev-agy.mjs"
+   },
+   "files": [
+     "dist",
+@@ -59,6 +60,7 @@
+     "kilo": "node bin/jev-kilo.mjs",
+     "gemini": "node bin/jev-gemini.mjs",
+     "devin": "node bin/jev-devin.mjs",
++    "agy": "node bin/jev-agy.mjs",
+     "prepublishOnly": "pnpm typecheck && pnpm test && pnpm build"
+   },
+   "dependencies": {
+diff --git a/src/adapters/codeassist.ts b/src/adapters/codeassist.ts
+new file mode 100644
+index 0000000..b5b6ff0
+--- /dev/null
++++ b/src/adapters/codeassist.ts
+@@ -0,0 +1,60 @@
++import { codeAssistMethod } from "../codeassist.js";
++import type { DirectCall } from "../types.js";
++import { type Adapter, sse } from "./adapter.js";
++import { type GeminiRequest, geminiAdapter } from "./gemini.js";
++
++/** agy's generation body: the Gemini request sits under `request`, the model beside it. */
++export interface CodeAssistRequest {
++  model?: string;
++  stream?: boolean;
++  request?: GeminiRequest;
++  [key: string]: unknown;
++}
++
++/** The Gemini request the shared Gemini code reads, with the model the envelope names. */
++const inner = (req: CodeAssistRequest): GeminiRequest => {
++  const body = req.request && typeof req.request === "object" ? req.request : {};
++  return { ...body, model: req.model };
++};
++
++// Routing is switched off until the privacy review approves it: every request is skipped before
++// Jev is asked, so the conversation never leaves for Jev. The Gemini code below is kept whole, so
++// approving routing later only means changing toInput.
++function toInput(): { skip: string } {
++  return { skip: "codeassist_passthrough_only" };
++}
++
++function apply(req: CodeAssistRequest, decision: Parameters<Adapter<CodeAssistRequest>["apply"]>[1], argsModel?: string): CodeAssistRequest {
++  // model and stream live in the envelope, not in the Gemini request agy sent.
++  const { model: _model, stream: _stream, ...rewritten } = geminiAdapter.apply(inner(req), decision, argsModel);
++  return { ...req, request: rewritten };
++}
++
++function directJson(req: CodeAssistRequest, call: DirectCall): object {
++  return { response: geminiAdapter.directJson(inner(req), call) };
++}
++
++/** Code Assist streams SSE only with `?alt=sse`; without it, the reply is a JSON array of chunks. */
++function directStream(req: CodeAssistRequest, call: DirectCall, url: URL) {
++  const chunk = JSON.stringify(directJson(req, call));
++  return url.searchParams.get("alt") === "sse" ? sse([{ data: chunk }]) : { body: `[${chunk}]`, contentType: "application/json" };
++}
++
++/** The method is in the path, and streaming is chosen by it. */
++function fromUrl(url: URL) {
++  return { stream: codeAssistMethod(url.pathname) === "streamGenerateContent" };
++}
++
++/** Count tools as Gemini does; the model comes from the envelope. */
++function metadata(req: CodeAssistRequest | undefined, url: URL) {
++  return { ...geminiAdapter.metadata?.(req && inner(req), url), model: req?.model };
++}
++
++export const codeAssistAdapter: Adapter<CodeAssistRequest> = {
++  toInput,
++  apply,
++  directJson,
++  directStream,
++  fromUrl,
++  metadata,
++};
+diff --git a/src/app.ts b/src/app.ts
+index 06385b2..4f96589 100644
+--- a/src/app.ts
++++ b/src/app.ts
+@@ -3,7 +3,9 @@ import { brotliDecompressSync, gunzipSync, inflateSync, zstdDecompressSync } fro
+ import { Hono, type Context } from "hono";
+ import type { Adapter, RequestMetadata } from "./adapters/adapter.js";
+ import { chatAdapter } from "./adapters/chat.js";
++import { codeAssistAdapter } from "./adapters/codeassist.js";
+ import { geminiAdapter } from "./adapters/gemini.js";
++import { CODE_ASSIST_MAX_QUERY, CODE_ASSIST_PATCH_VERSION, codeAssistLogPath, codeAssistRoute } from "./codeassist.js";
+ import { exaAdapter } from "./adapters/exa.js";
+ import { messagesAdapter } from "./adapters/messages.js";
+ import { responsesAdapter } from "./adapters/responses.js";
+@@ -324,9 +326,12 @@ export function createApp({ config, askJev, fetch: fetchImpl = fetch, log: write
+ 
+   // Answers before the key is checked, so that a launcher can find its gateway. A gateway that
+   // has a key is one somebody else may reach: it says that it is up, and nothing about itself.
+-  app.get("/health", (c) =>
+-    c.json(config.routerApiKey ? { status: "ok" } : { status: "ok", pid: process.pid, upstream: config.upstreamBaseUrl, jev: config.jevProvider }),
+-  );
++  app.get("/health", (c) => {
++    if (config.routerApiKey) return c.json({ status: "ok" });
++    // agy (Code Assist) also names its client and the version of its contract; other clients get the same body as before.
++    const codeAssist = config.codeAssist ? { client: "agy", codeAssist: CODE_ASSIST_PATCH_VERSION } : {};
++    return c.json({ status: "ok", pid: process.pid, upstream: config.upstreamBaseUrl, jev: config.jevProvider, ...codeAssist });
++  });
+ 
+   app.use("*", async (c, next) => {
+     if (!config.routerApiKey) return next();
+@@ -338,6 +343,43 @@ export function createApp({ config, askJev, fetch: fetchImpl = fetch, log: write
+     return c.json({ error: { message: "Invalid jev-gateway API key", type: "invalid_api_key" } }, 401);
+   });
+ 
++  // agy (Code Assist) gets the generation and account calls and nothing else. The other routes are
++  // not registered at all, so no request from that client can reach Jev or a backend it was not
++  // meant for.
++  if (config.codeAssist) {
++    app.route(
++      "/dashboard",
++      dashboardRoutes(config, events, { get: () => routing, set: (enabled) => void (routing = enabled) }),
++    );
++    // The route is read from the raw pathname, the one forward sends upstream: no prefix match, no
++    // decoding. The query is only measured here, never read.
++    app.all("/v1internal*", async (c) => {
++      const url = new URL(c.req.url);
++      if (url.search.length > CODE_ASSIST_MAX_QUERY) {
++        log({ event: "route", path: codeAssistLogPath(url.pathname), reason: "codeassist_query_too_long", status: 414 });
++        return c.json({ error: { message: "Query string too long", type: "invalid_request_error" } }, 414);
++      }
++      const match = codeAssistRoute(c.req.method, url.pathname);
++      if (match?.kind === "generate") return route(codeAssistAdapter)(c);
++      if (match?.kind === "auxiliary") {
++        // Bytes pass untouched: the body, its gzip, the SSE reply and the Authorization header.
++        const response = await forward(c.req.raw, config, fetchImpl);
++        dump?.("other", { method: c.req.method, path: c.req.path, headers: redactHeaders(c.req.raw.headers), status: response.status });
++        return response;
++      }
++      // Only the path's name is logged, never the rest of it, and never the query: either may hold a prompt.
++      const path = codeAssistLogPath(url.pathname);
++      if (match?.kind === "method_not_allowed") {
++        log({ event: "route", path, reason: "codeassist_method_not_allowed", status: 405 });
++        return c.json({ error: { message: "Method not allowed for this Code Assist route", type: "method_not_allowed" } }, 405, { Allow: match.allow });
++      }
++      log({ event: "route", path, reason: "codeassist_unknown_method", status: 404 });
++      return c.json({ error: { message: "Not a Code Assist method jev-gateway passes through", type: "not_found_error" } }, 404);
++    });
++    app.all("*", (c) => c.json({ error: { message: "Not found", type: "not_found_error" } }, 404));
++    return app;
++  }
++
+   /**
+    * Dry run: what would the router do with this body? Calls Jev, never upstream.
+    * Accepts any routed wire format; `?format=chat|responses|messages` overrides the guess.
+diff --git a/src/codeassist.ts b/src/codeassist.ts
+new file mode 100644
+index 0000000..65cbe43
+--- /dev/null
++++ b/src/codeassist.ts
+@@ -0,0 +1,180 @@
++// Code Assist is the API behind Google's Antigravity CLI (`agy`). Its wire format is not public:
++// the routes below are what agy 1.4.7 calls, read from the `google.api.http` rules in its protobuf
++// descriptors (verified 2026-10-24). Anything not listed here is refused, never forwarded.
++
++/**
++ * Version of this Code Assist contract (the agy patch). /health reports it as `codeAssist`, so a
++ * launcher or a person can tell which contract a running gateway speaks.
++ */
++export const CODE_ASSIST_PATCH_VERSION = 2;
++
++/** The only hosts the gateway sends Code Assist traffic to. */
++export const CODE_ASSIST_HOSTS = ["cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com"];
++
++/** The longest query string a Code Assist request may carry; longer ones get 414 before upstream. */
++export const CODE_ASSIST_MAX_QUERY = 4096;
++
++type Verb = "GET" | "POST";
++
++export interface CodeAssistRoute {
++  verb: Verb;
++  kind: "generate" | "auxiliary";
++  /** The name the route is known by in logs and tests. */
++  name: string;
++}
++
++const colon = (verb: Verb, kind: CodeAssistRoute["kind"], names: readonly string[]): [string, CodeAssistRoute][] =>
++  names.map((name) => [`/v1internal:${name}`, { verb, kind, name }]);
++
++const exact = (verb: Verb, kind: CodeAssistRoute["kind"], paths: readonly string[]): [string, CodeAssistRoute][] =>
++  paths.map((path) => [path, { verb, kind, name: path }]);
++
++/**
++ * Every exact pathname agy uses. Matching is by equality on the raw pathname, never by prefix.
++ * The one template is `/v1internal/agentPlugins/<id>`, handled in `lookup`.
++ */
++export const CODE_ASSIST_ROUTES: ReadonlyMap<string, CodeAssistRoute> = new Map<string, CodeAssistRoute>([
++  // POST colon: generation, routed through the adapter.
++  ...colon("POST", "generate", ["generateContent", "streamGenerateContent"]),
++  // POST colon: account, quota and setup calls, forwarded untouched.
++  ...colon("POST", "auxiliary", [
++    "battleModeAutoTrigger",
++    "battleModeOverrides",
++    "checkUrlAntivirus",
++    "checkUrlDenylist",
++    "completeCode",
++    "connectInstance",
++    "connectInstanceV2",
++    "countTokens",
++    "deleteInstance",
++    "fetchAdminControls",
++    "fetchAvailableModels",
++    "fetchCodeCustomizationState",
++    "fetchFromTrawlerCache",
++    "fetchUserInfo",
++    "generateChat",
++    "generateCode",
++    "getBundleWriteMint",
++    "initiateMeshSession",
++    "internalAtomicAgenticChat",
++    "listAuthorizedDevices",
++    "listExperiments",
++    "listModelConfigs",
++    "loadCodeAssist",
++    "migrateDatabaseCode",
++    "notifyUser",
++    "onboardUser",
++    "onboardUserBackgroundTasks",
++    "pollSignalingMessages",
++    "provisionConversationBundleDir",
++    "proxyCommand",
++    "recordClientEvent",
++    "recordCodeAssistMetrics",
++    "recordSmartchoicesFeedback",
++    "recordTrajectoryAnalytics",
++    "registerInteraction",
++    "registerWebPush",
++    "retrieveUserQuota",
++    "retrieveUserQuotaSummary",
++    "revokeAuthorizedDevice",
++    "rewriteUri",
++    "searchSnippets",
++    "sendSignalingMessage",
++    "setCodeAssistGlobalUserSetting",
++    "setUserSettings",
++    "streamGenerateChat",
++    "streamProxyCommand",
++    "tabChat",
++    "transformCode",
++    "updateInstance",
++    "uploadPerformanceProfile",
++    "writeTrajectoryAcls",
++  ]),
++  // GET colon: read-only account calls.
++  ...colon("GET", "auxiliary", [
++    "getCodeAssistGlobalUserSetting",
++    "listAgents",
++    "listCloudAICompanionProjects",
++    "listInstances",
++    "listRemoteRepositories",
++  ]),
++  // GET slash: exact paths only.
++  ...exact("GET", "auxiliary", [
++    "/v1internal/agentPlugins",
++    "/v1internal/buildWithGooglePlugins",
++    "/v1internal/cascadeNuxes",
++    "/v1internal/webDocsOptions",
++    "/v1internal/health",
++  ]),
++]);
++
++/** `/v1internal/agentPlugins/<id>`: one segment, and the id must be a plain name, not a path part. */
++const AGENT_PLUGIN_PREFIX = "/v1internal/agentPlugins/";
++const AGENT_PLUGIN_ID = /^[A-Za-z0-9._~-]{1,128}$/;
++
++function lookup(pathname: string): CodeAssistRoute | undefined {
++  const known = CODE_ASSIST_ROUTES.get(pathname);
++  if (known) return known;
++  if (!pathname.startsWith(AGENT_PLUGIN_PREFIX)) return undefined;
++  const id = pathname.slice(AGENT_PLUGIN_PREFIX.length);
++  if (!AGENT_PLUGIN_ID.test(id) || id === "." || id === "..") return undefined;
++  return { verb: "GET", kind: "auxiliary", name: "/v1internal/agentPlugins/*" };
++}
++
++export type CodeAssistRouteMatch =
++  | { kind: "generate" | "auxiliary"; name: string }
++  | { kind: "method_not_allowed"; name: string; allow: string };
++
++/**
++ * Classifies one request by its raw pathname (the one `forward` sends upstream, percent-encoding
++ * and all). Undefined means the path is not a Code Assist route and must not reach upstream.
++ * A known path with the wrong verb is `method_not_allowed`, HEAD and OPTIONS included.
++ */
++export function codeAssistRoute(method: string, pathname: string): CodeAssistRouteMatch | undefined {
++  const route = lookup(pathname);
++  if (!route) return undefined;
++  if (method === route.verb) return { kind: route.kind, name: route.name };
++  return { kind: "method_not_allowed", name: route.name, allow: route.verb };
++}
++
++/**
++ * The pathname as it may appear in a log line: the method's name, or the first segment after
++ * `/v1internal/`, with only `[A-Za-z0-9_]` kept and at most 64 characters. Never the rest of the
++ * path, never the query, because a request may carry a prompt.
++ */
++export function codeAssistLogPath(pathname: string): string {
++  const clean = (part: string) => part.replace(/[^A-Za-z0-9_]/g, "").slice(0, 64);
++  const colonName = /^\/v1internal:([^/?#]*)/.exec(pathname);
++  if (colonName) return `/v1internal:${clean(colonName[1]!)}`;
++  const segment = /^\/v1internal\/([^/?#]*)/.exec(pathname);
++  if (segment) return `/v1internal/${clean(segment[1]!)}`;
++  return "/v1internal";
++}
++
++/** The method a `/v1internal:<method>` path names, or undefined for any other path. */
++export function codeAssistMethod(path: string): string | undefined {
++  return /^\/v1internal:([A-Za-z]+)$/.exec(path)?.[1];
++}
++
++/**
++ * True only for an https origin on a Code Assist host, with no credentials, no path beyond the
++ * root, and no query or fragment. The gateway forwards the user's Google token to whatever this
++ * accepts, so anything looser would send it elsewhere.
++ */
++export function isCodeAssistUpstream(base: string): boolean {
++  try {
++    const url = new URL(base);
++    return (
++      url.protocol === "https:" &&
++      (url.port === "" || url.port === "443") &&
++      CODE_ASSIST_HOSTS.includes(url.hostname) &&
++      url.username === "" &&
++      url.password === "" &&
++      (url.pathname === "" || url.pathname === "/") &&
++      url.search === "" &&
++      url.hash === ""
++    );
++  } catch {
++    return false;
++  }
++}
+diff --git a/src/config.ts b/src/config.ts
+index e369105..72ee00f 100644
+--- a/src/config.ts
++++ b/src/config.ts
+@@ -1,3 +1,4 @@
++import { isCodeAssistUpstream } from "./codeassist.js";
+ import { PROVIDERS, resolveModel, resolveProvider, resolveUrl, type ProviderId } from "./jev.js";
+ export interface Config {
+   /** Interface to listen on. Loopback by default: the gateway forwards credentials and must not be reachable from the LAN. */
+@@ -37,6 +38,11 @@ export interface Config {
+   client: string;
+   /** JSON-lines file this process's stdout is appended to, if any: the dashboard's history. */
+   logFile?: string;
++  /**
++   * Google's Code Assist API, behind agy. Only generation and account calls are served, and every
++   * request passes through unread by Jev: see codeassist.ts and the checks in loadConfig.
++   */
++  codeAssist: boolean;
+ }
+ 
+ type Env = Record<string, string | undefined>;
+@@ -69,6 +75,7 @@ export function loadConfig(env: Env = process.env): Config {
+   const jevProvider = resolveProvider(env);
+   const jevModel = resolveModel(jevProvider, str(env, "JEV_MODEL"));
+   const client = str(env, "JEV_CLIENT") ?? "standalone";
++  const codeAssist = client === "agy";
+   // The model still called a tool in most "no tool needed" predictions that could be traced to a
+   // conversation, so Codex defaults to leaving the choice to it instead of taking its tools away.
+   const onNone = str(env, "JEV_ON_NONE") ?? (client === "codex" ? "passthrough" : "force_none");
+@@ -91,14 +98,36 @@ export function loadConfig(env: Env = process.env): Config {
+     argMinCertainty: num(env, "JEV_ARG_MIN_CERTAINTY", 0.8),
+     onNone,
+     directCalls: bool(env, "JEV_DIRECT_CALLS", true),
+-    routing: bool(env, "JEV_ROUTING", true),
++    // Code Assist never reaches Jev until its privacy review passes, so routing cannot be on.
++    routing: codeAssist ? false : bool(env, "JEV_ROUTING", true),
+     shadow: bool(env, "JEV_SHADOW", false),
+     maxStateChars: num(env, "JEV_MAX_STATE_CHARS", 60_000),
+     maxMessageChars: num(env, "JEV_MAX_MESSAGE_CHARS", 4_000),
+     debugDumpDir: str(env, "JEV_DEBUG_DUMP_DIR"),
+     client,
+     logFile: str(env, "JEV_LOG_FILE"),
++    codeAssist,
+   };
++  if (codeAssist) {
++    // agy sends the user's own Google token as Authorization. Each check below closes a way for
++    // that token, or the prompts it comes with, to leave the machine or reach a log or a disk.
++    if (!isCodeAssistUpstream(config.upstreamBaseUrl)) {
++      // The value is not echoed: a URL can carry credentials, and this error reaches the log.
++      throw new Error("JEV_CLIENT=agy forwards only to https://daily-cloudcode-pa.googleapis.com or https://cloudcode-pa.googleapis.com: UPSTREAM_BASE_URL is neither origin");
++    }
++    if (!["127.0.0.1", "::1", "localhost"].includes(config.host)) {
++      throw new Error(`JEV_CLIENT=agy must listen on loopback (127.0.0.1, ::1 or localhost), got HOST "${config.host}"`);
++    }
++    if (config.routerApiKey || config.upstreamApiKey) {
++      throw new Error("JEV_CLIENT=agy: unset ROUTER_API_KEY and UPSTREAM_API_KEY, the Authorization header is the user's own Google token");
++    }
++    if (config.shadow) {
++      throw new Error("JEV_CLIENT=agy: unset JEV_SHADOW, sending Code Assist requests to Jev needs a privacy review first");
++    }
++    if (config.debugDumpDir) {
++      throw new Error("JEV_CLIENT=agy: unset JEV_DEBUG_DUMP_DIR, a dump would write the prompts to disk");
++    }
++  }
+   if (config.routerApiKey && !config.upstreamApiKey) {
+     throw new Error("ROUTER_API_KEY requires UPSTREAM_API_KEY (the client key is not valid upstream)");
+   }
+diff --git a/src/dashboard.html b/src/dashboard.html
+index 6e753e9..bc77694 100644
+--- a/src/dashboard.html
++++ b/src/dashboard.html
+@@ -203,7 +203,7 @@ const ownPort = location.port || (location.protocol === "https:" ? "443" : "80")
+ // The launchers' default ports and the standalone server's; `?peers=8795,8796` adds custom ones,
+ // `?peers=none` watches this router only.
+ const peers = params.get("peers");
+-const ports = new Set(peers === "none" ? [ownPort] : [ownPort, "8787", "8788", "8789", "8790", "8791", "8792", "8793", ...(peers ?? "").split(",").filter(Boolean)]);
++const ports = new Set(peers === "none" ? [ownPort] : [ownPort, "8787", "8788", "8789", "8790", "8791", "8792", "8793", "8794", ...(peers ?? "").split(",").filter(Boolean)]);
+ const sources = [...ports].map((port) => ({
+   port,
+   own: port === ownPort,
+diff --git a/src/upstream.ts b/src/upstream.ts
+index 6b41293..cc8e3de 100644
+--- a/src/upstream.ts
++++ b/src/upstream.ts
+@@ -65,6 +65,8 @@ export async function forward(
+     init.body = incoming.body;
+     init.duplex = "half";
+   }
++  // Code Assist carries the user's Google token: a redirect must not carry it to another host.
++  if (config.codeAssist) init.redirect = "manual";
+ 
+   let upstream: Response;
+   try {
+@@ -77,6 +79,15 @@ export async function forward(
+     );
+   }
+ 
++  if (config.codeAssist && (upstream.type === "opaqueredirect" || (upstream.status >= 300 && upstream.status < 400))) {
++    // Location and body are dropped: following or echoing either would hand the caller another target.
++    upstream.body?.cancel().catch(() => {});
++    return Response.json(
++      { error: { message: "jev-gateway refused an upstream redirect", type: "upstream_redirect_refused" } },
++      { status: 502, headers: options.responseHeaders },
++    );
++  }
++
+   const responseHeaders = new Headers();
+   upstream.headers.forEach((value, name) => {
+     if (!DROPPED_RESPONSE_HEADERS.has(name)) responseHeaders.set(name, value);
+diff --git a/src/usage.ts b/src/usage.ts
+index a49af01..a66741d 100644
+--- a/src/usage.ts
++++ b/src/usage.ts
+@@ -59,9 +59,13 @@ function merge(into: Partial<Usage>, raw: Raw): void {
+     into.input = num(raw.input_tokens) + into.cached + into.cacheWrite;
+     into.output = num(raw.output_tokens);
+   } else if ("promptTokenCount" in raw || "candidatesTokenCount" in raw) {
+-    // Google Gemini API (usageMetadata)
++    // Google Gemini API (usageMetadata). Gemini keeps its thoughts out of candidatesTokenCount but
++    // bills them as output, so they count as output here (and as the reasoning part of it), the
++    // way the other APIs report reasoning inside output. Each report is cumulative, like the rest.
++    const thoughts = num(raw.thoughtsTokenCount);
+     into.input = num(raw.promptTokenCount);
+-    into.output = num(raw.candidatesTokenCount);
++    into.output = num(raw.candidatesTokenCount) + thoughts;
++    into.reasoning = thoughts;
+     into.cached = num(raw.cachedContentTokenCount);
+   } else {
+     // Responses API — or Anthropic's message_delta, which only updates the output count.
+diff --git a/test/codeassist-multiturn.test.ts b/test/codeassist-multiturn.test.ts
+new file mode 100644
+index 0000000..fd36f21
+--- /dev/null
++++ b/test/codeassist-multiturn.test.ts
+@@ -0,0 +1,390 @@
++// Multi-turn Code Assist (agy) traffic: functionCall, functionResponse and thoughtSignature.
++// Everything runs offline. The upstream is a fake fetch, and askJev throws if anything asks it.
++//
++// The turn rules are quoted from Google's thought-signature documentation, read 2026-10-24:
++// https://docs.cloud.google.com/vertex-ai/generative-ai/docs/thought-signatures
++//  - parallel calls: "only the first functionCall part will contain the thought_signature"
++//  - sequential calls: "each functionCall part will contain a thought_signature"
++//  - "Interleaving responses (FC1+signature, FR1, FC2, FR2) results in a 400 error"
++//  - "If a required thought signature is not returned when using Gemini 3 models, the model will return a 400 error"
++//  - "A turn begins with the most recent user message that is not a functionResponse"
++//  - skip_thought_signature_validator: "a last resort as it will negatively impact model performance"
++import { readFileSync } from "node:fs";
++import { describe, expect, it } from "vitest";
++import { createApp } from "../src/app.js";
++import { codeAssistAdapter, type CodeAssistRequest } from "../src/adapters/codeassist.js";
++import { type GeminiContent, type GeminiPart, type GeminiRequest, geminiAdapter } from "../src/adapters/gemini.js";
++import type { AskJev } from "../src/decide.js";
++import type { RouterInput } from "../src/types.js";
++import { testConfig } from "./helpers.js";
++
++const CA = "https://daily-cloudcode-pa.googleapis.com";
++const TOKEN = "ya29.test-token-multiturn";
++const SKIP = "skip_thought_signature_validator";
++const RULES_URL = "https://docs.cloud.google.com/vertex-ai/generative-ai/docs/thought-signatures";
++const FIXTURES = new URL("./fixtures/codeassist/", import.meta.url);
++
++interface Candidate {
++  content: { role: string; parts: GeminiPart[] };
++  finishReason?: string;
++  index?: number;
++}
++
++interface Reply {
++  response: { candidates: Candidate[]; usageMetadata?: Record<string, number>; modelVersion?: string; responseId?: string };
++  traceId?: string;
++  metadata?: unknown;
++}
++
++interface Fixture {
++  description: string;
++  rules: string;
++  request: CodeAssistRequest;
++  replySse: Reply[];
++  replyJson: Reply;
++}
++
++/** The raw text is what the gateway must send upstream byte for byte; the parsed form is what the tests read. */
++function loadFixture(name: string): { raw: string; fixture: Fixture } {
++  const raw = readFileSync(new URL(name, FIXTURES), "utf8");
++  return { raw, fixture: JSON.parse(raw) as Fixture };
++}
++
++const requestOf = (fixture: Fixture): GeminiRequest => fixture.request.request ?? {};
++const contentsOf = (fixture: Fixture): GeminiContent[] => requestOf(fixture).contents ?? [];
++
++/** The wire form of an SSE reply: one `data:` line per event, each followed by a blank line. */
++const sseText = (events: Reply[]) => events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
++
++const sig = (part: GeminiPart): string | undefined => (typeof part.thoughtSignature === "string" ? part.thoughtSignature : undefined);
++
++/** Every signature in a list of contents, with where it sits: content index, part index, value. */
++const signatures = (contents: GeminiContent[]) =>
++  contents.flatMap((content, i) =>
++    (content.parts ?? []).flatMap((part, j) => {
++      const value = sig(part);
++      return value === undefined ? [] : [{ i, j, value }];
++    }),
++  );
++
++const isResponseOnly = (content: GeminiContent) => {
++  const parts = content.parts ?? [];
++  return parts.length > 0 && parts.every((part) => part.functionResponse !== undefined);
++};
++
++/** Index of the first content of the current turn: the most recent user message that is not a functionResponse. */
++export function turnStart(contents: GeminiContent[]): number {
++  for (let i = contents.length - 1; i >= 0; i--) {
++    const content = contents[i]!;
++    if (content.role === "user" && !isResponseOnly(content)) return i;
++  }
++  return -1;
++}
++
++/**
++ * The rules that make the API answer 400 when they are broken, checked over the current turn only:
++ * the first functionCall of every model message carries its signature, and each functionCall is
++ * answered by a functionResponse in the very next message, all of them together in that message.
++ * Earlier turns and text-only replies are not checked, because the documentation makes their
++ * signatures optional.
++ */
++export function turnViolations(contents: GeminiContent[]): string[] {
++  const problems: string[] = [];
++  const start = turnStart(contents);
++  if (start < 0) return problems;
++  for (let i = start + 1; i < contents.length; i++) {
++    const content = contents[i]!;
++    if (content.role !== "model") continue;
++    const calls = (content.parts ?? []).filter((part) => part.functionCall !== undefined);
++    if (calls.length === 0) continue;
++    const names = calls.map((part) => part.functionCall!.name);
++    if (sig(calls[0]!) === undefined) problems.push(`content ${i}: functionCall ${names[0]} has no thoughtSignature`);
++    const next = contents[i + 1];
++    const answered = next?.role === "user" ? (next.parts ?? []).flatMap((part) => (part.functionResponse ? [part.functionResponse.name] : [])) : [];
++    for (const name of names) {
++      const at = answered.indexOf(name);
++      if (at < 0) problems.push(`content ${i}: no functionResponse for ${name} in the next user message`);
++      else answered.splice(at, 1);
++    }
++  }
++  return problems;
++}
++
++/** A stand-in for the upstream and for askJev: askJev counts its calls and always refuses. */
++function gateway(reply: (url: string) => Response) {
++  const calls: { url: string; headers: Headers; text: string }[] = [];
++  const logged: Record<string, unknown>[] = [];
++  let asked = 0;
++  const askJev: AskJev = async () => {
++    asked++;
++    throw new Error("askJev must not run in the agy passthrough");
++  };
++  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
++    const text = init?.body === undefined || init.body === null ? "" : await new Response(init.body as BodyInit).text();
++    calls.push({ url: String(input), headers: new Headers(init?.headers), text });
++    return reply(String(input));
++  }) as typeof fetch;
++  const app = createApp({
++    // Routing and shadow are on in the config on purpose: the adapter must still refuse to ask Jev.
++    config: testConfig({ codeAssist: true, routing: true, shadow: true, upstreamBaseUrl: CA }),
++    askJev,
++    fetch: fetchImpl,
++    log: (entry) => logged.push(entry),
++  });
++  const post = (path: string, body: string) =>
++    app.request(path, {
++      method: "POST",
++      headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` },
++      body,
++    });
++  return { post, calls, logged, asked: () => asked };
++}
++
++/** Log lines are written once the reply has been read to the end, in the background: wait for them. */
++async function until(check: () => boolean) {
++  for (let i = 0; i < 200 && !check(); i++) await new Promise((done) => setTimeout(done, 5));
++}
++
++const REQUEST_FIXTURES = [
++  { file: "sequential-turn.json", signatures: 2 },
++  { file: "parallel-calls.json", signatures: 1 },
++  { file: "streamed-signature.json", signatures: 0 },
++  { file: "completed-history.json", signatures: 1 },
++] as const;
++
++const ENDPOINTS = [
++  { name: "streamGenerateContent?alt=sse", path: "/v1internal:streamGenerateContent?alt=sse", stream: true },
++  { name: "generateContent", path: "/v1internal:generateContent", stream: false },
++] as const;
++
++describe("agy multi-turn: fixtures", () => {
++  it("each request fixture carries the signatures its rules talk about", () => {
++    for (const { file, signatures: expected } of REQUEST_FIXTURES) {
++      const { fixture } = loadFixture(file);
++      expect(fixture.rules).toBe(RULES_URL);
++      expect(signatures(contentsOf(fixture)), file).toHaveLength(expected);
++    }
++  });
++
++  it("the sequential fixture is the request sent after two steps, ending in a functionResponse", () => {
++    const { fixture } = loadFixture("sequential-turn.json");
++    const contents = contentsOf(fixture);
++    expect(contents.map((content) => content.role)).toEqual(["user", "model", "user", "model", "user"]);
++    expect(signatures(contents).map((s) => s.value)).toEqual(["ZmFrZS1zaWctc2VxLUE=", "ZmFrZS1zaWctc2VxLUI="]);
++    // The turn did not restart at the functionResponse: it still starts at the first user text.
++    expect(turnStart(contents)).toBe(0);
++  });
++
++  it("the parallel fixture signs only the first functionCall, and answers both in one message", () => {
++    const { fixture } = loadFixture("parallel-calls.json");
++    const contents = contentsOf(fixture);
++    const [, model, answer] = contents;
++    expect(model!.parts!.map((part) => part.functionCall?.name)).toEqual(["read_file", "read_file"]);
++    expect(sig(model!.parts![0]!)).toBeDefined();
++    expect(sig(model!.parts![1]!)).toBeUndefined();
++    expect(answer!.parts!.filter((part) => part.functionResponse)).toHaveLength(2);
++  });
++
++  it("the streamed fixture puts the signature in an empty-text part, in the last event before finishReason", () => {
++    const { fixture } = loadFixture("streamed-signature.json");
++    const events = fixture.replySse;
++    expect(events).toHaveLength(3);
++    const [, middle, last] = events;
++    expect(middle!.response.candidates[0]!.content.parts).toEqual([{ text: "", thoughtSignature: "ZmFrZS1zaWctc3RyZWFt" }]);
++    expect(last!.response.candidates[0]!.finishReason).toBe("STOP");
++  });
++
++  it("the completed-history fixture closes its earlier turn with a signature on the last text part", () => {
++    const { fixture } = loadFixture("completed-history.json");
++    const contents = contentsOf(fixture);
++    const earlier = contents[1]!.parts!;
++    expect(earlier.at(-1)!.text).toBe("There are 3 files: a.ts, b.ts, c.ts.");
++    expect(sig(earlier.at(-1)!)).toBe("ZmFrZS1zaWctaGlzdC1wcmV2");
++    expect(turnStart(contents)).toBe(2);
++  });
++});
++
++describe("agy multi-turn: passthrough, the gateway in agy mode", () => {
++  for (const { file } of REQUEST_FIXTURES) {
++    for (const endpoint of ENDPOINTS) {
++      it(`${file} through ${endpoint.name}: body and reply byte for byte, usage logged, askJev never called`, async () => {
++        const { raw, fixture } = loadFixture(file);
++        const reply = endpoint.stream ? sseText(fixture.replySse) : JSON.stringify(fixture.replyJson);
++        const { post, calls, logged, asked } = gateway(() =>
++          new Response(reply, { headers: { "content-type": endpoint.stream ? "text/event-stream" : "application/json" } }),
++        );
++
++        const response = await post(endpoint.path, raw);
++
++        expect(response.status).toBe(200);
++        expect(await response.text()).toBe(reply);
++        expect(calls).toHaveLength(1);
++        expect(calls[0]!.url).toBe(`${CA}${endpoint.path}`);
++        expect(calls[0]!.text).toBe(raw);
++        expect(calls[0]!.headers.get("authorization")).toBe(`Bearer ${TOKEN}`);
++        expect(asked()).toBe(0);
++
++        await until(() => logged.some((entry) => entry.event === "route" && "usage" in entry));
++        const usage = (endpoint.stream ? fixture.replySse.at(-1)! : fixture.replyJson).response.usageMetadata!;
++        expect(logged.find((entry) => entry.event === "route")).toMatchObject({
++          status: 200,
++          mode: "passthrough",
++          reason: "codeassist_passthrough_only",
++          // Gemini bills thoughts as output: candidates plus thoughts.
++          usage: { input: usage.promptTokenCount, output: usage.candidatesTokenCount! + usage.thoughtsTokenCount! },
++        });
++      });
++    }
++  }
++
++  it("reads every part of a streamed reply up to finishReason; a reader that skips empty text misses the signature", () => {
++    const { fixture } = loadFixture("streamed-signature.json");
++    const text = sseText(fixture.replySse);
++    const events = text.split("\n\n").filter((block) => block.length > 0);
++    expect(events).toHaveLength(3);
++
++    const parts = events.flatMap((block, event) => {
++      const candidate = (JSON.parse(block.replace(/^data: /, "")) as Reply).response.candidates[0]!;
++      return candidate.content.parts.map((part) => ({ event, part, finished: candidate.finishReason !== undefined }));
++    });
++    const found = parts.filter(({ part }) => sig(part) !== undefined);
++    expect(found.map(({ event }) => event)).toEqual([1]);
++    expect(parts.find(({ part }) => sig(part))!.part.text).toBe("");
++
++    // toInput-style reading: parts with no text are dropped before the signature is seen.
++    expect(parts.filter(({ part }) => part.text).some(({ part }) => sig(part) !== undefined)).toBe(false);
++  });
++});
++
++describe("agy multi-turn: the turn rules", () => {
++  for (const { file } of REQUEST_FIXTURES) {
++    it(`${file} obeys the rules for its current turn`, () => {
++      expect(turnViolations(contentsOf(loadFixture(file).fixture))).toEqual([]);
++    });
++  }
++
++  const sequential = () => structuredClone(contentsOf(loadFixture("sequential-turn.json").fixture));
++  const parallel = () => structuredClone(contentsOf(loadFixture("parallel-calls.json").fixture));
++
++  it("rejects a sequential step whose signature was dropped", () => {
++    const contents = sequential();
++    delete contents[3]!.parts![0]!.thoughtSignature;
++    expect(turnViolations(contents)).toEqual(["content 3: functionCall run_command has no thoughtSignature"]);
++  });
++
++  it("rejects a parallel group whose first call lost its signature", () => {
++    const contents = parallel();
++    delete contents[1]!.parts![0]!.thoughtSignature;
++    expect(turnViolations(contents)).toEqual(["content 1: functionCall read_file has no thoughtSignature"]);
++  });
++
++  it("rejects a parallel group whose responses are split across messages (FC1+signature, FR1, FC2, FR2)", () => {
++    const contents = parallel();
++    // Keep the two calls in one model message, but answer the second one in a message of its own.
++    const answers = contents[2]!.parts!;
++    contents.splice(2, 1, { role: "user", parts: [answers[0]!] }, { role: "user", parts: [answers[1]!] });
++    expect(turnViolations(contents)).toEqual(["content 1: no functionResponse for read_file in the next user message"]);
++  });
++
++  it("does not require a signature in a closed earlier turn", () => {
++    const contents: GeminiContent[] = [
++      { role: "user", parts: [{ text: "List the files." }] },
++      { role: "model", parts: [{ functionCall: { name: "read_file", args: { path: "a.ts" } } }] },
++      { role: "user", parts: [{ functionResponse: { name: "read_file", response: { content: "x" } } }] },
++      { role: "model", parts: [{ text: "Done." }] },
++      { role: "user", parts: [{ text: "Now edit it." }] },
++    ];
++    expect(turnStart(contents)).toBe(4);
++    expect(turnViolations(contents)).toEqual([]);
++  });
++});
++
++describe("agy multi-turn: routing that stays off (adapter calls with simulated decisions)", () => {
++  const decisions: Record<"forced" | "none", Parameters<typeof codeAssistAdapter.apply>[1]> = {
++    forced: { mode: "forced", tool: "read_file", kind: "function", confidence: 0.9 },
++    none: { mode: "none", confidence: 0.9 },
++  };
++  const expectedToolConfig = {
++    forced: { functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["read_file"] } },
++    none: { functionCallingConfig: { mode: "NONE" } },
++  };
++
++  for (const file of ["sequential-turn.json", "parallel-calls.json", "completed-history.json"]) {
++    for (const mode of ["forced", "none"] as const) {
++      it(`apply(${mode}) on ${file}: contents and every signature stay, only toolConfig changes`, () => {
++        const { fixture } = loadFixture(file);
++        const original = structuredClone(fixture.request);
++        const rewritten = codeAssistAdapter.apply(fixture.request, decisions[mode]);
++
++        // The rewrite does not touch the original, which the gateway would otherwise replay.
++        expect(fixture.request).toEqual(original);
++        expect(rewritten.request!.contents).toEqual(original.request!.contents);
++        expect(signatures(rewritten.request!.contents!)).toEqual(signatures(original.request!.contents!));
++        expect(rewritten.request!.toolConfig).toEqual(expectedToolConfig[mode]);
++
++        const { toolConfig: _newConfig, ...newRequest } = rewritten.request!;
++        const { toolConfig: _oldConfig, ...oldRequest } = original.request!;
++        expect(newRequest).toEqual(oldRequest);
++        const { request: _newBody, ...newEnvelope } = rewritten;
++        const { request: _oldBody, ...oldEnvelope } = original;
++        expect(newEnvelope).toEqual(oldEnvelope);
++
++        // Undocumented: whether Google accepts a changed toolConfig in the middle of a turn that
++        // carries signatures. The rules say nothing about it, so this is only a structural check.
++        expect(turnViolations(rewritten.request!.contents!)).toEqual(turnViolations(original.request!.contents!));
++      });
++    }
++  }
++
++  it("directJson's functionCall has no thoughtSignature, and replaying it breaks the rule on the next step", () => {
++    const { fixture } = loadFixture("completed-history.json");
++    const json = codeAssistAdapter.directJson(fixture.request, { tool: "read_file", args: { path: "a.ts" }, inputTokens: 5 }) as Reply;
++    const part = json.response.candidates[0]!.content.parts[0]!;
++    expect(part.functionCall).toEqual({ name: "read_file", args: { path: "a.ts" } });
++    expect(sig(part)).toBeUndefined();
++
++    // The client appends the model's reply and answers it: the current turn now has an unsigned call.
++    const replay: GeminiContent[] = [
++      ...contentsOf(fixture),
++      { role: "model", parts: [part] },
++      { role: "user", parts: [{ functionResponse: { name: "read_file", response: { content: "x" } } }] },
++    ];
++    expect(turnViolations(replay)).toEqual(["content 3: functionCall read_file has no thoughtSignature"]);
++
++    // The only way out the documentation offers is the synthetic validator value, a last resort.
++    const withSkip = structuredClone(replay);
++    withSkip[3]!.parts![0]!.thoughtSignature = SKIP;
++    expect(turnViolations(withSkip)).toEqual([]);
++  });
++
++  it("directStream's SSE has no thoughtSignature either", () => {
++    const { fixture } = loadFixture("completed-history.json");
++    const call = { tool: "read_file", args: { path: "a.ts" }, inputTokens: 5 };
++    const text = codeAssistAdapter.directStream(fixture.request, call, new URL(`http://x${ENDPOINTS[0].path}`));
++    expect(typeof text).toBe("string");
++    expect(text as string).not.toContain("thoughtSignature");
++  });
++
++  it("toInput of the Gemini adapter would send the whole conversation to Jev: system, text, arguments and results", () => {
++    const { fixture } = loadFixture("sequential-turn.json");
++    const inner: GeminiRequest = { ...requestOf(fixture), model: fixture.request.model as string | undefined };
++    const input = geminiAdapter.toInput(inner, 100_000) as RouterInput;
++    const sent = JSON.stringify(input);
++
++    expect(input.system).toContain("You are a coding agent.");
++    expect(sent).toContain("Find the build error and fix it.");
++    expect(sent).toContain("src/build.ts");
++    expect(sent).toContain("export const build = () => 1;");
++    expect(sent).toContain("FAIL build.test.ts");
++    // The signatures themselves are dropped on the way to Jev.
++    expect(sent).not.toContain("ZmFrZS1zaWc");
++  });
++
++  it("a thought-summary part ({thought: true}) would reach Jev too, because toInput reads every text part", () => {
++    const { fixture } = loadFixture("sequential-turn.json");
++    const inner: GeminiRequest = structuredClone(requestOf(fixture));
++    inner.contents![1]!.parts!.unshift({ text: "private reasoning summary", thought: true });
++    const input = geminiAdapter.toInput(inner, 100_000) as RouterInput;
++    expect(JSON.stringify(input)).toContain("private reasoning summary");
++  });
++});
+diff --git a/test/codeassist-routes.test.ts b/test/codeassist-routes.test.ts
+new file mode 100644
+index 0000000..53f00d7
+--- /dev/null
++++ b/test/codeassist-routes.test.ts
+@@ -0,0 +1,365 @@
++import { gzipSync } from "node:zlib";
++import { describe, expect, it } from "vitest";
++import { createApp } from "../src/app.js";
++import { CODE_ASSIST_ROUTES, codeAssistLogPath, codeAssistRoute } from "../src/codeassist.js";
++import { fakeJev, testConfig } from "./helpers.js";
++
++const CA = "https://daily-cloudcode-pa.googleapis.com";
++const TOKEN = "ya29.route-token-41c8";
++const PROMPT = "PROMPT-SENTINEL-routes read the secret file";
++const PROBE_QUERY = "?probe=route-1";
++
++const agyConfig = (overrides: Parameters<typeof testConfig>[0] = {}) =>
++  testConfig({ codeAssist: true, routing: false, upstreamBaseUrl: CA, ...overrides });
++
++const agyBody = () => ({
++  model: "gemini-3-pro",
++  project: "proj-test",
++  requestId: "req-1",
++  userAgent: "agy/1.4.7",
++  requestType: "agent",
++  request: {
++    contents: [{ role: "user", parts: [{ text: PROMPT }] }],
++    generationConfig: { temperature: 0 },
++    labels: {},
++  },
++});
++
++/** Records each upstream call with its body as raw bytes, so the bytes can be compared exactly. */
++function capturingFetch(respond: (url: string, init: RequestInit) => Response | Promise<Response> = () => Response.json({ ok: true })) {
++  const calls: { url: string; init: RequestInit; headers: Headers; bytes: Uint8Array }[] = [];
++  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
++    const bytes = init?.body === undefined || init.body === null ? new Uint8Array() : new Uint8Array(await new Response(init.body as BodyInit).arrayBuffer());
++    calls.push({ url: String(input), init: init ?? {}, headers: new Headers(init?.headers), bytes });
++    return respond(String(input), init ?? {});
++  }) as typeof fetch;
++  return { fetchImpl, calls };
++}
++
++function setup(overrides: Parameters<typeof testConfig>[0] = {}, respond?: (url: string, init: RequestInit) => Response | Promise<Response>) {
++  const logged: Record<string, unknown>[] = [];
++  const upstream = capturingFetch(respond);
++  const app = createApp({
++    config: agyConfig(overrides),
++    askJev: fakeJev({}).askJev,
++    fetch: upstream.fetchImpl,
++    log: (entry) => logged.push(entry),
++  });
++  const send = (method: string, path: string, body?: BodyInit, headers: Record<string, string> = {}) =>
++    app.request(path, {
++      method,
++      headers: { authorization: `Bearer ${TOKEN}`, ...headers },
++      body: method === "GET" || method === "HEAD" ? undefined : body,
++    });
++  return { app, send, logged, upstream };
++}
++
++/** Log lines are written once the reply has been read, in the background: wait for them. */
++async function until(check: () => boolean) {
++  for (let i = 0; i < 200 && !check(); i++) await new Promise((done) => setTimeout(done, 5));
++}
++
++const AUX_BODY = JSON.stringify({ metadata: { ideType: "ANTIGRAVITY" }, probe: "ünïcode ✓" });
++
++describe("agy routes: every route in the table reaches upstream with its verb and path", () => {
++  for (const [path, route] of CODE_ASSIST_ROUTES) {
++    it(`${route.verb} ${path} (${route.kind})`, async () => {
++      const { send, upstream, logged } = setup({}, () => Response.json({ route: path }));
++      const body = route.kind === "generate" ? JSON.stringify(agyBody()) : AUX_BODY;
++      const response = await send(route.verb, `${path}${PROBE_QUERY}`, route.verb === "POST" ? body : undefined);
++
++      expect(response.status).toBe(200);
++      expect(await response.json()).toEqual({ route: path });
++      expect(upstream.calls).toHaveLength(1);
++      expect(upstream.calls[0]!.url).toBe(`${CA}${path}${PROBE_QUERY}`);
++      expect(upstream.calls[0]!.init.method).toBe(route.verb);
++      expect(upstream.calls[0]!.headers.get("authorization")).toBe(`Bearer ${TOKEN}`);
++      if (route.verb === "POST") {
++        expect(new TextDecoder().decode(upstream.calls[0]!.bytes)).toBe(body);
++      }
++      if (route.kind === "auxiliary") {
++        // Auxiliary calls never write a route line: the dashboard counts those as LLM traffic.
++        expect(logged.filter((entry) => entry.event === "route")).toHaveLength(0);
++      }
++    });
++  }
++
++  it("answers HEAD and OPTIONS on every route with 405, and never calls upstream", async () => {
++    const { send, upstream } = setup();
++    for (const [path, route] of CODE_ASSIST_ROUTES) {
++      for (const method of ["HEAD", "OPTIONS"]) {
++        const response = await send(method, `${path}${PROBE_QUERY}`);
++        expect(response.status, `${method} ${path}`).toBe(405);
++        expect(response.headers.get("allow"), `${method} ${path}`).toBe(route.verb);
++      }
++    }
++    expect(upstream.calls).toHaveLength(0);
++  });
++});
++
++describe("agy routes: the agentPlugins template", () => {
++  it("forwards one plain segment, with the id's allowed characters intact", async () => {
++    const { send, upstream } = setup();
++    for (const id of ["plugin-1", "a.b_c~d", "x", "A".repeat(128)]) {
++      const response = await send("GET", `/v1internal/agentPlugins/${id}`);
++      expect(response.status, id).toBe(200);
++      expect(upstream.calls.at(-1)!.url).toBe(`${CA}/v1internal/agentPlugins/${id}`);
++      expect(upstream.calls.at(-1)!.init.method).toBe("GET");
++    }
++  });
++
++  it("refuses ids that are not one plain segment, without calling upstream", async () => {
++    const { send, upstream } = setup();
++    for (const path of [
++      "/v1internal/agentPlugins/a/b",
++      "/v1internal/agentPlugins/..",
++      "/v1internal/agentPlugins/.",
++      "/v1internal/agentPlugins/%2e%2e",
++      "/v1internal/agentPlugins/a%2Fb",
++      "/v1internal/agentPlugins/A".concat("x".repeat(128)),
++      "/v1internal/agentPlugins/",
++    ]) {
++      const response = await send("GET", path);
++      expect(response.status, path).toBe(404);
++    }
++    expect(upstream.calls).toHaveLength(0);
++  });
++
++  it("answers a POST on an agentPlugins id with 405, not a forward", async () => {
++    const { send, upstream } = setup();
++    const response = await send("POST", "/v1internal/agentPlugins/plugin-1", "{}");
++    expect(response.status).toBe(405);
++    expect(response.headers.get("allow")).toBe("GET");
++    expect(upstream.calls).toHaveLength(0);
++  });
++});
++
++describe("agy routes: blocked paths never reach upstream", () => {
++  const blocked: [string, string][] = [
++    ["POST", "/v1internal:proxyCommand/{target_instance_uuid}/{rpc_path=**}"],
++    ["POST", "/v1internal:streamProxyCommand/{target_instance_uuid}/{rpc_path=**}"],
++    ["POST", "/v1internal:proxyCommand/abc/rpc/deep/path"],
++    ["POST", "/v1internal:unknownMethod"],
++    ["GET", "/v1internal/unknown"],
++    ["GET", "/v1internal/agentPlugins/a/b"],
++    ["GET", "/v1internal/agentPlugins/.."],
++    ["GET", "/v1internal/agentPlugins/%2e%2e"],
++    ["POST", "/v1internal:loadCodeAssist/x"],
++    ["POST", "/v1internal:loadCodeAssist%2F.."],
++    ["POST", "//evil.example/v1internal:loadCodeAssist"],
++    ["POST", "/v1internal:LOADCODEASSIST"],
++  ];
++
++  for (const [method, path] of blocked) {
++    it(`${method} ${path} is refused with 404`, async () => {
++      const { send, upstream } = setup();
++      const response = await send(method, path, method === "POST" ? "{}" : undefined);
++      expect(response.status).toBe(404);
++      expect(upstream.calls).toHaveLength(0);
++    });
++  }
++
++  it("refuses any path outside /v1internal with 404", async () => {
++    const { send, upstream, logged } = setup();
++    for (const path of ["/", "/v1/messages", "/v1beta/models/x:generateContent", "/router/decide", "/v1internalx:loadCodeAssist"]) {
++      const response = await send("POST", path, "{}");
++      expect(response.status, path).toBe(404);
++    }
++    expect(upstream.calls).toHaveLength(0);
++    // Not a route: the wildcard may log a line for /v1internalX, but nothing outside /v1internal is logged.
++    expect(logged.every((entry) => String(entry.path).startsWith("/v1internal"))).toBe(true);
++  });
++});
++
++describe("agy routes: wrong verbs get 405 with Allow", () => {
++  it("GET on a POST route, and POST on a GET route", async () => {
++    const { send, upstream, logged } = setup();
++    const getPost = await send("GET", "/v1internal:loadCodeAssist");
++    expect(getPost.status).toBe(405);
++    expect(getPost.headers.get("allow")).toBe("POST");
++    expect(await getPost.json()).toMatchObject({ error: { type: "method_not_allowed" } });
++
++    const postGet = await send("POST", "/v1internal/health", "{}");
++    expect(postGet.status).toBe(405);
++    expect(postGet.headers.get("allow")).toBe("GET");
++
++    const postGenerateGet = await send("GET", "/v1internal:generateContent");
++    expect(postGenerateGet.status).toBe(405);
++    expect(postGenerateGet.headers.get("allow")).toBe("POST");
++
++    expect(upstream.calls).toHaveLength(0);
++    await until(() => logged.length >= 3);
++    expect(logged.map((entry) => entry.reason)).toEqual([
++      "codeassist_method_not_allowed",
++      "codeassist_method_not_allowed",
++      "codeassist_method_not_allowed",
++    ]);
++    expect(logged[0]).toMatchObject({ event: "route", path: "/v1internal:loadCodeAssist", status: 405 });
++  });
++});
++
++describe("agy routes: query length", () => {
++  it("answers 414 for a query longer than 4096 characters, without calling upstream", async () => {
++    const { send, upstream, logged } = setup();
++    const long = `?q=${"x".repeat(4096)}`;
++    const response = await send("POST", `/v1internal:loadCodeAssist${long}`, "{}");
++    expect(response.status).toBe(414);
++    expect(upstream.calls).toHaveLength(0);
++    expect(JSON.stringify(logged)).not.toContain("xxxxxxxx");
++  });
++
++  it("answers 414 one character past the limit", async () => {
++    const { send, upstream } = setup();
++    const query = `?q=${"x".repeat(4094)}`;
++    expect(query.length).toBe(4097);
++    const response = await send("POST", `/v1internal:loadCodeAssist${query}`, "{}");
++    expect(response.status).toBe(414);
++    expect(upstream.calls).toHaveLength(0);
++  });
++
++  it("forwards a query of exactly 4096 characters", async () => {
++    const { send, upstream } = setup();
++    const query = `?q=${"x".repeat(4093)}`;
++    expect(query.length).toBe(4096);
++    const response = await send("POST", `/v1internal:loadCodeAssist${query}`, "{}");
++    expect(response.status).toBe(200);
++    expect(upstream.calls[0]!.url).toBe(`${CA}/v1internal:loadCodeAssist${query}`);
++  });
++});
++
++describe("agy routes: auxiliary bytes stay as they were", () => {
++  it("passes a gzip request body and its content-encoding through byte for byte", async () => {
++    const { send, upstream } = setup();
++    const gz = gzipSync(AUX_BODY);
++    const response = await send("POST", "/v1internal:fetchUserInfo", gz, {
++      "content-type": "application/json",
++      "content-encoding": "gzip",
++    });
++    expect(response.status).toBe(200);
++    expect(upstream.calls).toHaveLength(1);
++    expect(Buffer.from(upstream.calls[0]!.bytes).equals(gz)).toBe(true);
++    expect(upstream.calls[0]!.headers.get("content-encoding")).toBe("gzip");
++    expect(upstream.calls[0]!.headers.get("authorization")).toBe(`Bearer ${TOKEN}`);
++  });
++
++  it("returns an SSE reply from an auxiliary call intact", async () => {
++    const sse = 'data: {"progress":1}\n\ndata: {"progress":2}\n\n';
++    const { send } = setup({}, () => new Response(sse, { headers: { "content-type": "text/event-stream" } }));
++    const response = await send("POST", "/v1internal:streamGenerateChat?alt=sse", AUX_BODY);
++    expect(response.status).toBe(200);
++    expect(response.headers.get("content-type")).toBe("text/event-stream");
++    expect(await response.text()).toBe(sse);
++  });
++
++  it("returns an auxiliary JSON reply intact and drops only the framing headers", async () => {
++    const payload = JSON.stringify({ ok: true, text: "ünï ✓" });
++    const { send } = setup({}, () =>
++      new Response(payload, {
++        headers: { "content-type": "application/json", "content-encoding": "gzip", "content-length": "999", "x-goog-trace": "t-1" },
++      }),
++    );
++    const response = await send("POST", "/v1internal:loadCodeAssist", AUX_BODY);
++    expect(response.status).toBe(200);
++    expect(response.headers.get("content-encoding")).toBeNull();
++    expect(response.headers.get("content-length")).toBeNull();
++    expect(response.headers.get("x-goog-trace")).toBe("t-1");
++    expect(await response.text()).toBe(payload);
++  });
++});
++
++describe("agy routes: logging", () => {
++  it("logs a 404 for a path with a slash as the first segment only", async () => {
++    const { send, upstream, logged } = setup();
++    const response = await send("GET", "/v1internal/buildWithGooglePluginsX/secret?q=1");
++    expect(response.status).toBe(404);
++    expect(upstream.calls).toHaveLength(0);
++    await until(() => logged.length >= 1);
++    expect(logged).toHaveLength(1);
++    expect(logged[0]).toMatchObject({ event: "route", path: "/v1internal/buildWithGooglePluginsX", reason: "codeassist_unknown_method", status: 404 });
++    expect(JSON.stringify(logged)).not.toContain("secret");
++    expect(JSON.stringify(logged)).not.toContain("q=1");
++  });
++
++  it("sanitizes the logged name to [A-Za-z0-9_] and at most 64 characters", async () => {
++    const { send, logged } = setup();
++    await send("POST", `/v1internal/${"a-b.c".repeat(30)}/tail`, "{}");
++    await until(() => logged.length >= 1);
++    const path = logged[0]!.path as string;
++    expect(path).toMatch(/^\/v1internal\/[A-Za-z0-9_]{1,64}$/);
++  });
++
++  it("never logs the prompt or the token for a refused generation with a bad verb", async () => {
++    const { send, logged } = setup();
++    await send("GET", "/v1internal:streamGenerateContent?alt=sse");
++    await send("POST", "/v1internal/nope/PROMPT", JSON.stringify(agyBody()));
++    await until(() => logged.length >= 2);
++    const everything = JSON.stringify(logged);
++    expect(everything).not.toContain(PROMPT);
++    expect(everything).not.toContain(TOKEN);
++  });
++});
++
++describe("agy routes: redirects", () => {
++  it("refuses a 302 from upstream with 502, drops Location and the body, and asks fetch not to follow", async () => {
++    const { send, upstream } = setup({}, () =>
++      new Response("secret-redirect-body", { status: 302, headers: { location: "https://evil.example/" } }),
++    );
++    const response = await send("POST", "/v1internal:loadCodeAssist", AUX_BODY);
++
++    expect(response.status).toBe(502);
++    expect(response.headers.get("location")).toBeNull();
++    expect(await response.text()).toBe(
++      JSON.stringify({ error: { message: "jev-gateway refused an upstream redirect", type: "upstream_redirect_refused" } }),
++    );
++    expect(upstream.calls).toHaveLength(1);
++    expect(upstream.calls[0]!.init.redirect).toBe("manual");
++    expect(upstream.calls[0]!.url).toBe(`${CA}/v1internal:loadCodeAssist`);
++  });
++
++  it("refuses a redirect on a generation call too", async () => {
++    const { send, upstream } = setup({}, () => new Response(null, { status: 307, headers: { location: "https://evil.example/" } }));
++    const response = await send("POST", "/v1internal:generateContent", JSON.stringify(agyBody()));
++    expect(response.status).toBe(502);
++    expect(upstream.calls[0]!.init.redirect).toBe("manual");
++  });
++
++  it("leaves other clients alone: no manual redirect, and a 302 passes through as before", async () => {
++    const upstream = capturingFetch(() => new Response(null, { status: 302, headers: { location: "https://llm.test/next" } }));
++    const app = createApp({
++      config: testConfig({ client: "claude", codeAssist: false, upstreamBaseUrl: "https://llm.test/v1" }),
++      askJev: fakeJev({}).askJev,
++      fetch: upstream.fetchImpl,
++    });
++    const response = await app.request("/v1/models", { headers: { authorization: `Bearer ${TOKEN}` } });
++
++    expect(response.status).toBe(302);
++    expect(response.headers.get("location")).toBe("https://llm.test/next");
++    expect(upstream.calls).toHaveLength(1);
++    expect("redirect" in upstream.calls[0]!.init).toBe(false);
++  });
++});
++
++describe("agy routes: the classifier", () => {
++  it("returns undefined for anything that is not a route", () => {
++    expect(codeAssistRoute("POST", "/v1internal:unknownMethod")).toBeUndefined();
++    expect(codeAssistRoute("POST", "/v1internal:loadCodeAssist/x")).toBeUndefined();
++    expect(codeAssistRoute("POST", "/v1internal:loadCodeAssist%2F..")).toBeUndefined();
++    expect(codeAssistRoute("POST", "/v1internal:loadcodeassist")).toBeUndefined();
++    expect(codeAssistRoute("GET", "/v1internal/health/")).toBeUndefined();
++  });
++
++  it("returns the kind and name for a route with its verb, and method_not_allowed otherwise", () => {
++    expect(codeAssistRoute("POST", "/v1internal:generateContent")).toEqual({ kind: "generate", name: "generateContent" });
++    expect(codeAssistRoute("POST", "/v1internal:loadCodeAssist")).toEqual({ kind: "auxiliary", name: "loadCodeAssist" });
++    expect(codeAssistRoute("GET", "/v1internal:loadCodeAssist")).toEqual({ kind: "method_not_allowed", name: "loadCodeAssist", allow: "POST" });
++    expect(codeAssistRoute("GET", "/v1internal/health")).toEqual({ kind: "auxiliary", name: "/v1internal/health" });
++    expect(codeAssistRoute("HEAD", "/v1internal/health")).toEqual({ kind: "method_not_allowed", name: "/v1internal/health", allow: "GET" });
++  });
++
++  it("logs paths with only the method name or the first segment", () => {
++    expect(codeAssistLogPath("/v1internal:loadCodeAssist/x")).toBe("/v1internal:loadCodeAssist");
++    expect(codeAssistLogPath("/v1internal/buildWithGooglePluginsX/secret")).toBe("/v1internal/buildWithGooglePluginsX");
++    expect(codeAssistLogPath("/v1internal:a!b.c?q")).toBe("/v1internal:abc");
++    expect(codeAssistLogPath("/v1internal")).toBe("/v1internal");
++  });
++});
+diff --git a/test/codeassist.test.ts b/test/codeassist.test.ts
+new file mode 100644
+index 0000000..4e360f8
+--- /dev/null
++++ b/test/codeassist.test.ts
+@@ -0,0 +1,522 @@
++import { createServer, type Server } from "node:http";
++import type { AddressInfo } from "node:net";
++import { readFileSync } from "node:fs";
++import { gzipSync } from "node:zlib";
++import { describe, expect, it } from "vitest";
++import { createApp } from "../src/app.js";
++import { codeAssistAdapter } from "../src/adapters/codeassist.js";
++import { CODE_ASSIST_PATCH_VERSION, codeAssistMethod, isCodeAssistUpstream } from "../src/codeassist.js";
++import { loadConfig } from "../src/config.js";
++import { fakeJev, testConfig } from "./helpers.js";
++
++// @ts-ignore: bin/ is plain JavaScript outside the tsconfig include; resolved at runtime.
++const clients = await import("../bin/clients.mjs");
++
++const CA = "https://daily-cloudcode-pa.googleapis.com";
++const TOKEN = "ya29.test-token-7f3a";
++const PROMPT = "PROMPT-SENTINEL-93b1 read the secret file";
++const GENERATE = "/v1internal:generateContent";
++const STREAM = "/v1internal:streamGenerateContent?alt=sse";
++
++const agyConfig = (overrides: Parameters<typeof testConfig>[0] = {}) =>
++  testConfig({ codeAssist: true, routing: false, upstreamBaseUrl: CA, ...overrides });
++
++/** The body agy sends for a generation call: the Gemini request sits under `request`. */
++const agyBody = (extra: Record<string, unknown> = {}) => ({
++  model: "gemini-3-pro",
++  project: "proj-test",
++  requestId: "req-1",
++  userAgent: "agy/1.4.7",
++  requestType: "agent",
++  request: {
++    contents: [{ role: "user", parts: [{ text: PROMPT }] }],
++    systemInstruction: { parts: [{ text: "You are an agent." }] },
++    tools: [
++      {
++        functionDeclarations: [
++          { name: "shell", description: "Runs a shell command.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } },
++        ],
++      },
++    ],
++    generationConfig: { temperature: 0 },
++    labels: {},
++    sessionId: "session-test",
++  },
++  ...extra,
++});
++
++/** A fetch stand-in that records each call (body read as text) and answers with `respond`. */
++function recordingFetch(respond: (url: string, init: RequestInit) => Response | Promise<Response>) {
++  const calls: { url: string; init: RequestInit; headers: Headers; text: string }[] = [];
++  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
++    const text = init?.body === undefined || init.body === null ? "" : await new Response(init.body as BodyInit).text();
++    calls.push({ url: String(input), init: init ?? {}, headers: new Headers(init?.headers), text });
++    return respond(String(input), init ?? {});
++  }) as typeof fetch;
++  return { fetchImpl, calls };
++}
++
++const okJson = (value: unknown = { ok: true }) => Response.json(value);
++
++function setup(overrides: Parameters<typeof testConfig>[0] = {}, respond?: (url: string, init: RequestInit) => Response | Promise<Response>) {
++  const logged: Record<string, unknown>[] = [];
++  const jev = fakeJev({});
++  const upstream = recordingFetch(respond ?? (() => okJson()));
++  const app = createApp({
++    config: agyConfig(overrides),
++    askJev: jev.askJev,
++    fetch: upstream.fetchImpl,
++    log: (entry) => logged.push(entry),
++  });
++  const post = (path: string, body: unknown = agyBody(), headers: Record<string, string> = {}) =>
++    app.request(path, {
++      method: "POST",
++      headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}`, ...headers },
++      body: typeof body === "string" ? body : JSON.stringify(body),
++    });
++  return { app, post, logged, jev, upstream };
++}
++
++/** Log lines are written once the reply has been read, in the background: wait for them. */
++async function until(check: () => boolean) {
++  for (let i = 0; i < 200 && !check(); i++) await new Promise((done) => setTimeout(done, 5));
++}
++
++const frame = (payload: unknown) => `data: ${JSON.stringify(payload)}\n\n`;
++
++const SSE_BODY =
++  frame({
++    response: {
++      candidates: [{ content: { role: "model", parts: [{ text: "reading", thoughtSignature: "c2lnLWJ5dGVz" }] }, index: 0 }],
++      usageMetadata: { promptTokenCount: 120, candidatesTokenCount: 7, totalTokenCount: 127, thoughtsTokenCount: 3 },
++      modelVersion: "gemini-3-pro",
++      responseId: "resp-1",
++    },
++    traceId: "trace-1",
++    metadata: {},
++  }) +
++  frame({
++    response: { candidates: [{ content: { role: "model", parts: [] }, finishReason: "STOP", index: 0 }], responseId: "resp-1" },
++    traceId: "trace-1",
++    metadata: {},
++  });
++
++describe("agy: generation through the gateway", () => {
++  it("streams SSE byte for byte, keeps thoughtSignature and the token, and logs the usage", async () => {
++    const { post, upstream, logged } = setup({}, () =>
++      new Response(SSE_BODY, { headers: { "content-type": "text/event-stream" } }),
++    );
++    const body = JSON.stringify(agyBody());
++    const response = await post(STREAM, body);
++
++    expect(response.status).toBe(200);
++    expect(response.headers.get("content-type")).toBe("text/event-stream");
++    expect(await response.text()).toBe(SSE_BODY);
++
++    expect(upstream.calls).toHaveLength(1);
++    expect(upstream.calls[0]!.url).toBe(`${CA}/v1internal:streamGenerateContent?alt=sse`);
++    expect(upstream.calls[0]!.text).toBe(body);
++    expect(upstream.calls[0]!.headers.get("authorization")).toBe(`Bearer ${TOKEN}`);
++
++    await until(() => logged.some((entry) => entry.event === "route" && "usage" in entry));
++    expect(logged.find((entry) => entry.event === "route")).toMatchObject({
++      model: "gemini-3-pro",
++      status: 200,
++      tools: 1,
++      mode: "passthrough",
++      // 7 candidate tokens plus 3 thoughts: Gemini bills thoughts as output.
++      usage: { input: 120, output: 10 },
++    });
++  });
++
++  it("passes generateContent JSON through unchanged", async () => {
++    const reply = { response: { candidates: [{ content: { role: "model", parts: [{ text: "done" }] }, finishReason: "STOP" }], usageMetadata: { promptTokenCount: 9, candidatesTokenCount: 2, totalTokenCount: 11 } }, traceId: "t" };
++    const { post, upstream } = setup({}, () => Response.json(reply));
++    const response = await post(GENERATE);
++
++    expect(response.status).toBe(200);
++    expect(await response.json()).toEqual(reply);
++    expect(upstream.calls[0]!.url).toBe(`${CA}/v1internal:generateContent`);
++  });
++
++  it("never asks Jev, even with routing and shadow switched on", async () => {
++    const { post, upstream, jev, logged } = setup({ routing: true, shadow: true });
++    const body = JSON.stringify(agyBody());
++    const response = await post(GENERATE, body);
++    expect(await response.text()).toBe(JSON.stringify({ ok: true }));
++
++    expect(jev.requests).toHaveLength(0);
++    expect(upstream.calls[0]!.text).toBe(body);
++    await until(() => logged.some((entry) => entry.reason === "codeassist_passthrough_only"));
++    expect(logged.find((entry) => entry.event === "route")).toMatchObject({ reason: "codeassist_passthrough_only" });
++  });
++
++  it("does not ask Jev when routing is on and shadow is off", async () => {
++    const { post, jev, upstream } = setup({ routing: true, shadow: false });
++    const body = JSON.stringify(agyBody());
++    await post(GENERATE, body);
++
++    expect(jev.requests).toHaveLength(0);
++    expect(upstream.calls[0]!.text).toBe(body);
++  });
++
++  it("answers an unreadable generation body by forwarding it untouched", async () => {
++    const { post, upstream } = setup({});
++    const response = await post(GENERATE, "{not json");
++    expect(response.status).toBe(200);
++    expect(upstream.calls[0]!.text).toBe("{not json");
++  });
++});
++
++describe("agy: account and auxiliary calls", () => {
++  const auxiliary = [
++    "loadCodeAssist",
++    "fetchAdminControls",
++    "fetchUserInfo",
++    "retrieveUserQuotaSummary",
++    "fetchAvailableModels",
++    "listExperiments",
++    "writeTrajectoryAcls",
++  ];
++
++  for (const method of auxiliary) {
++    it(`forwards ${method} to the Code Assist host untouched`, async () => {
++      const reply = { method, ok: true };
++      const { post, upstream } = setup({}, () => Response.json(reply));
++      const body = JSON.stringify({ metadata: { ideType: "ANTIGRAVITY" } });
++      const response = await post(`/v1internal:${method}`, body);
++
++      expect(response.status).toBe(200);
++      expect(await response.json()).toEqual(reply);
++      expect(upstream.calls).toHaveLength(1);
++      expect(upstream.calls[0]!.url).toBe(`${CA}/v1internal:${method}`);
++      expect(upstream.calls[0]!.text).toBe(body);
++    });
++  }
++
++  it("answers an unknown method with 404 and never calls upstream", async () => {
++    const { post, upstream, logged } = setup();
++    const response = await post("/v1internal:deleteEverything", agyBody());
++
++    expect(response.status).toBe(404);
++    expect(await response.json()).toMatchObject({ error: { type: "not_found_error" } });
++    expect(upstream.calls).toHaveLength(0);
++    // Only the name of the method is logged, never the body.
++    const line = logged.find((entry) => entry.reason === "codeassist_unknown_method");
++    expect(line).toMatchObject({ path: "/v1internal:deleteEverything", status: 404 });
++    expect(JSON.stringify(logged)).not.toContain(PROMPT);
++  });
++
++  it("answers a GET on a POST-only Code Assist method with 405 and Allow, and never calls upstream", async () => {
++    const { app, upstream } = setup();
++    const response = await app.request("/v1internal:loadCodeAssist", { headers: { authorization: `Bearer ${TOKEN}` } });
++    expect(response.status).toBe(405);
++    expect(response.headers.get("allow")).toBe("POST");
++    expect(upstream.calls).toHaveLength(0);
++  });
++
++  it("answers other API routes with 404 and never calls upstream", async () => {
++    const { post, upstream, logged } = setup();
++    for (const path of [
++      "/v1/messages",
++      "/v1/chat/completions",
++      "/v1/responses",
++      "/v1beta/models/x:generateContent",
++      "/exa.api_server_pb.ApiServerService/GetChatMessage",
++      "/router/decide",
++    ]) {
++      const response = await post(path, agyBody());
++      expect(response.status, path).toBe(404);
++    }
++    expect(upstream.calls).toHaveLength(0);
++    expect(logged).toHaveLength(0);
++  });
++
++  it("serves /health and the dashboard", async () => {
++    const { app } = setup();
++    const health = await app.request("/health");
++    expect(health.status).toBe(200);
++    expect(await health.json()).toMatchObject({ status: "ok", upstream: CA });
++
++    const dashboard = await app.request("/dashboard");
++    expect(dashboard.status).toBe(200);
++  });
++
++  it("names the client and the contract version in /health, and only for agy", async () => {
++    const { app } = setup();
++    const agyHealth = await (await app.request("/health")).json();
++    expect(agyHealth).toEqual({ status: "ok", pid: process.pid, upstream: CA, jev: expect.any(String), client: "agy", codeAssist: 2 });
++    expect(CODE_ASSIST_PATCH_VERSION).toBe(2);
++
++    const plain = createApp({ config: testConfig({ codeAssist: false, client: "codex" }), askJev: fakeJev({}).askJev });
++    const plainHealth = await (await plain.request("/health")).json();
++    expect(Object.keys(plainHealth).sort()).toEqual(["jev", "pid", "status", "upstream"]);
++    expect(plainHealth).not.toHaveProperty("client");
++    expect(plainHealth).not.toHaveProperty("codeAssist");
++  });
++});
++
++describe("agy: failures", () => {
++  it("passes upstream error statuses and bodies through", async () => {
++    for (const status of [400, 429, 500]) {
++      const errorBody = JSON.stringify({ error: { code: status, message: `upstream said ${status}` } });
++      const { post } = setup({}, () => new Response(errorBody, { status, headers: { "content-type": "application/json", "retry-after": "5" } }));
++      const response = await post(GENERATE);
++      expect(response.status).toBe(status);
++      expect(response.headers.get("retry-after")).toBe("5");
++      expect(await response.text()).toBe(errorBody);
++    }
++  });
++
++  it("answers 502 when upstream is unreachable", async () => {
++    const { post } = setup({}, () => {
++      throw new TypeError("fetch failed");
++    });
++    const response = await post(GENERATE);
++    expect(response.status).toBe(502);
++    expect(await response.json()).toMatchObject({ error: { type: "upstream_unreachable" } });
++  });
++
++  it("decodes a gzip reply from upstream and drops its content-encoding", async () => {
++    const payload = { response: { candidates: [], usageMetadata: { promptTokenCount: 3, candidatesTokenCount: 1 } }, traceId: "gz" };
++    const server: Server = createServer((_request, reply) => {
++      reply.writeHead(200, { "content-type": "application/json", "content-encoding": "gzip" });
++      reply.end(gzipSync(JSON.stringify(payload)));
++    });
++    await new Promise<void>((done) => server.listen(0, "127.0.0.1", () => done()));
++    try {
++      const port = (server.address() as AddressInfo).port;
++      // A local upstream cannot pass loadConfig, so the config is built directly for this test.
++      const app = createApp({ config: agyConfig({ upstreamBaseUrl: `http://127.0.0.1:${port}` }), askJev: fakeJev({}).askJev });
++      const response = await app.request(GENERATE, {
++        method: "POST",
++        headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` },
++        body: JSON.stringify(agyBody()),
++      });
++      expect(response.status).toBe(200);
++      expect(response.headers.get("content-encoding")).toBeNull();
++      expect(await response.json()).toEqual(payload);
++    } finally {
++      await new Promise((done) => server.close(done));
++    }
++  });
++
++  it("ends the stream quietly when the client hangs up mid-SSE, and aborts the upstream read", async () => {
++    let upstreamSignal: AbortSignal | undefined;
++    const { app, upstream } = (() => {
++      const calls: { init: RequestInit }[] = [];
++      const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
++        calls.push({ init: init ?? {} });
++        upstreamSignal = init?.signal ?? undefined;
++        const body = new ReadableStream<Uint8Array>({
++          start(controller) {
++            controller.enqueue(new TextEncoder().encode(frame({ response: { candidates: [] } })));
++            // Like a real fetch body: an abort errors the read instead of leaving it waiting.
++            upstreamSignal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")));
++          },
++        });
++        return new Response(body, { headers: { "content-type": "text/event-stream" } });
++      }) as typeof fetch;
++      const app = createApp({ config: agyConfig(), askJev: fakeJev({}).askJev, fetch: fetchImpl });
++      return { app, upstream: calls };
++    })();
++
++    const client = new AbortController();
++    const response = await app.request(STREAM, {
++      method: "POST",
++      headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` },
++      body: JSON.stringify(agyBody()),
++      signal: client.signal,
++    });
++    const reader = response.body!.getReader();
++    expect((await reader.read()).done).toBe(false);
++
++    client.abort();
++    // Ends without throwing: the hang-up is the client's choice, not an error.
++    const after = await reader.read();
++    expect(after.done).toBe(true);
++    expect(upstream).toHaveLength(1);
++    expect(upstreamSignal?.aborted).toBe(true);
++  });
++});
++
++describe("agy: privacy", () => {
++  it("never logs the bearer token or the prompt text", async () => {
++    const { post, logged, upstream } = setup({}, () =>
++      new Response(SSE_BODY, { headers: { "content-type": "text/event-stream" } }),
++    );
++    await (await post(STREAM)).text();
++    await post("/v1internal:fetchUserInfo", { prompt: PROMPT }, { authorization: `Bearer ${TOKEN}` });
++    await post("/v1internal:nope", agyBody());
++    await until(() => logged.length >= 2);
++
++    const everything = JSON.stringify(logged);
++    expect(logged.length).toBeGreaterThan(0);
++    expect(everything).not.toContain(TOKEN);
++    expect(everything).not.toContain(PROMPT);
++    // The token still reaches upstream: only the logs are kept clean.
++    expect(upstream.calls.every((call) => call.headers.get("authorization") === `Bearer ${TOKEN}`)).toBe(true);
++  });
++});
++
++describe("agy: loadConfig", () => {
++  const agy = (extra: Record<string, string> = {}) => ({ JEV_CLIENT: "agy", UPSTREAM_BASE_URL: CA, ...extra });
++
++  it("accepts the Code Assist origin and forces routing off", () => {
++    const config = loadConfig(agy({ JEV_ROUTING: "true" }));
++    expect(config.codeAssist).toBe(true);
++    expect(config.routing).toBe(false);
++    expect(config.client).toBe("agy");
++    expect(config.upstreamBaseUrl).toBe(CA);
++  });
++
++  it("accepts the loopback host spellings", () => {
++    for (const host of ["127.0.0.1", "::1", "localhost"]) {
++      expect(() => loadConfig(agy({ HOST: host }))).not.toThrow();
++    }
++  });
++
++  it("refuses an upstream that is not the Code Assist origin", () => {
++    for (const upstream of [
++      undefined,
++      "https://api.openai.com/v1",
++      "http://daily-cloudcode-pa.googleapis.com",
++      "https://evil.example",
++      "https://daily-cloudcode-pa.googleapis.com.evil.example",
++      "https://user:secret@daily-cloudcode-pa.googleapis.com",
++      "https://daily-cloudcode-pa.googleapis.com:8443",
++      "https://daily-cloudcode-pa.googleapis.com/v1",
++      "https://daily-cloudcode-pa.googleapis.com?x=1",
++    ]) {
++      const env: Record<string, string> = { JEV_CLIENT: "agy" };
++      if (upstream !== undefined) env.UPSTREAM_BASE_URL = upstream;
++      expect(() => loadConfig(env), String(upstream)).toThrow(
++        /forwards only to https:\/\/daily-cloudcode-pa\.googleapis\.com or https:\/\/cloudcode-pa\.googleapis\.com/,
++      );
++    }
++  });
++
++  it("refuses a host that is not loopback", () => {
++    for (const host of ["0.0.0.0", "192.168.1.10", "example.com"]) {
++      expect(() => loadConfig(agy({ HOST: host })), host).toThrow(/loopback/);
++    }
++  });
++
++  it("refuses keys, because Authorization is the user's own Google token", () => {
++    expect(() => loadConfig(agy({ ROUTER_API_KEY: "k" }))).toThrow(/ROUTER_API_KEY/);
++    expect(() => loadConfig(agy({ UPSTREAM_API_KEY: "k" }))).toThrow(/UPSTREAM_API_KEY/);
++    expect(() => loadConfig(agy({ ROUTER_API_KEY: "k", UPSTREAM_API_KEY: "k" }))).toThrow(/ROUTER_API_KEY/);
++  });
++
++  it("refuses shadow mode and debug dumps", () => {
++    expect(() => loadConfig(agy({ JEV_SHADOW: "true" }))).toThrow(/JEV_SHADOW/);
++    expect(() => loadConfig(agy({ JEV_DEBUG_DUMP_DIR: "/tmp/dumps" }))).toThrow(/JEV_DEBUG_DUMP_DIR/);
++    expect(loadConfig(agy({ JEV_SHADOW: "false" })).shadow).toBe(false);
++  });
++
++  it("does not change the config of other clients", () => {
++    const config = loadConfig({ JEV_CLIENT: "claude", UPSTREAM_BASE_URL: "https://llm.test/v1", JEV_ROUTING: "true", JEV_SHADOW: "true" });
++    expect(config.codeAssist).toBe(false);
++    expect(config.routing).toBe(true);
++    expect(config.shadow).toBe(true);
++  });
++
++  it("serves no Code Assist route to other clients", async () => {
++    const upstream = recordingFetch(() => okJson());
++    const app = createApp({ config: testConfig({ client: "claude" }), askJev: fakeJev({}).askJev, fetch: upstream.fetchImpl });
++    const response = await app.request("/v1internal:loadCodeAssist", {
++      method: "POST",
++      headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` },
++      body: "{}",
++    });
++    expect(response.status).toBe(404);
++    expect(upstream.calls).toHaveLength(0);
++  });
++});
++
++describe("agy: method and origin checks", () => {
++  it("reads the method out of a /v1internal path only", () => {
++    expect(codeAssistMethod("/v1internal:streamGenerateContent")).toBe("streamGenerateContent");
++    expect(codeAssistMethod("/v1internal:loadCodeAssist")).toBe("loadCodeAssist");
++    expect(codeAssistMethod("/v1internal:")).toBeUndefined();
++    expect(codeAssistMethod("/v1internal:load/x")).toBeUndefined();
++    expect(codeAssistMethod("/v1/messages")).toBeUndefined();
++  });
++
++  it("accepts only https on the Code Assist hosts, with no credentials, path or query", () => {
++    expect(isCodeAssistUpstream("https://cloudcode-pa.googleapis.com")).toBe(true);
++    expect(isCodeAssistUpstream("https://daily-cloudcode-pa.googleapis.com")).toBe(true);
++    expect(isCodeAssistUpstream("https://daily-cloudcode-pa.googleapis.com:443")).toBe(true);
++    expect(isCodeAssistUpstream("https://daily-cloudcode-pa.googleapis.com/")).toBe(true);
++    expect(isCodeAssistUpstream("not a url")).toBe(false);
++    expect(isCodeAssistUpstream("https://daily-cloudcode-pa.googleapis.com#x")).toBe(false);
++  });
++});
++
++describe("agy: adapter envelopes", () => {
++  const call = { tool: "shell", args: { command: "ls" }, inputTokens: 5 };
++
++  it("wraps the direct answer in the Code Assist response envelope", () => {
++    const json = codeAssistAdapter.directJson(agyBody(), call) as any;
++    expect(json.response.candidates[0].content.parts[0].functionCall).toEqual({ name: "shell", args: { command: "ls" } });
++    expect(json.response.usageMetadata.promptTokenCount).toBe(5);
++  });
++
++  it("streams the direct answer as SSE with alt=sse, and as a JSON array without", () => {
++    const sse = codeAssistAdapter.directStream(agyBody(), call, new URL(`http://x${STREAM}`));
++    expect(typeof sse).toBe("string");
++    expect(sse as string).toMatch(/^data: \{"response":/);
++    expect((sse as string).endsWith("\n\n")).toBe(true);
++
++    const array = codeAssistAdapter.directStream(agyBody(), call, new URL(`http://x${GENERATE}`));
++    expect(typeof array).toBe("object");
++    const parsed = JSON.parse((array as { body: string }).body) as unknown[];
++    expect(parsed).toHaveLength(1);
++    expect((array as { contentType: string }).contentType).toBe("application/json");
++  });
++
++  it("applies a rewrite inside request and keeps every field outside it", () => {
++    const original = agyBody();
++    const rewritten = codeAssistAdapter.apply(original, { mode: "forced", tool: "shell", kind: "function", confidence: 0.9 }) as any;
++    expect(rewritten.model).toBe(original.model);
++    expect(rewritten.project).toBe(original.project);
++    expect(rewritten.requestId).toBe(original.requestId);
++    expect(rewritten.userAgent).toBe(original.userAgent);
++    expect(rewritten.requestType).toBe(original.requestType);
++    expect(rewritten.request.toolConfig.functionCallingConfig).toEqual({ mode: "ANY", allowedFunctionNames: ["shell"] });
++    expect(rewritten.request.model).toBeUndefined();
++    expect(rewritten.request.contents).toEqual(original.request.contents);
++    // The rewrite must not reach back into the original.
++    expect(original.request).not.toHaveProperty("toolConfig");
++  });
++
++  it("counts tools from the request and takes the model from the envelope", () => {
++    expect(codeAssistAdapter.metadata?.(agyBody() as any, new URL(`http://x${GENERATE}`))).toMatchObject({ model: "gemini-3-pro", tools: 1 });
++    expect(codeAssistAdapter.fromUrl?.(new URL(`http://x${STREAM}`))).toEqual({ stream: true });
++    expect(codeAssistAdapter.fromUrl?.(new URL(`http://x${GENERATE}`))).toEqual({ stream: false });
++  });
++});
++
++describe("clients.mjs: agy launcher spec", () => {
++  it("points agy at the gateway with CLOUD_CODE_URL on its own port", () => {
++    const agy = clients.agy;
++    expect(agy.name).toBe("jev-agy");
++    expect(agy.client).toBe("agy");
++    expect(agy.portEnv).toBe("JEV_AGY_PORT");
++    expect(agy.defaultPort).toBe(8794);
++    expect(agy.env("http://127.0.0.1:8794")).toEqual({ CLOUD_CODE_URL: "http://127.0.0.1:8794" });
++    expect(agy.configHelp("http://127.0.0.1:8794")).toContain("CLOUD_CODE_URL=http://127.0.0.1:8794");
++    expect(agy.upstream()).toBe(CA);
++  });
++
++  it("does not share a default port with any other launcher", () => {
++    const others = [clients.codex, clients.claude, clients.opencode, clients.gemini, clients.devin, clients.kilo];
++    expect(others.map((spec: { defaultPort: number }) => spec.defaultPort)).not.toContain(clients.agy.defaultPort);
++  });
++
++  it("is registered in package.json with a runnable script", () => {
++    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as any;
++    expect(pkg.bin["jev-agy"]).toBe("bin/jev-agy.mjs");
++    expect(pkg.scripts.agy).toBe("node bin/jev-agy.mjs");
++  });
++});
+diff --git a/test/fixtures/codeassist/completed-history.json b/test/fixtures/codeassist/completed-history.json
+new file mode 100644
+index 0000000..979ec52
+--- /dev/null
++++ b/test/fixtures/codeassist/completed-history.json
+@@ -0,0 +1,85 @@
++{
++  "description": "FAKE fixture. History with a completed earlier turn whose final text part carries a thoughtSignature, followed by a new user turn. The earlier turn is closed, so its signature is kept as it was. Signatures are invented base64 strings.",
++  "rules": "https://docs.cloud.google.com/vertex-ai/generative-ai/docs/thought-signatures",
++  "request": {
++    "model": "gemini-3-pro",
++    "project": "proj-fixture",
++    "requestId": "fixture-history-1",
++    "userAgent": "agy/1.4.7",
++    "requestType": "agent",
++    "request": {
++      "contents": [
++        { "role": "user", "parts": [{ "text": "List the files." }] },
++        {
++          "role": "model",
++          "parts": [{ "text": "There are 3 files: a.ts, b.ts, c.ts.", "thoughtSignature": "ZmFrZS1zaWctaGlzdC1wcmV2" }]
++        },
++        { "role": "user", "parts": [{ "text": "Now edit the first file." }] }
++      ],
++      "systemInstruction": { "parts": [{ "text": "You are a coding agent." }] },
++      "tools": [
++        {
++          "functionDeclarations": [
++            { "name": "read_file", "description": "Reads a file.", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] } },
++            { "name": "run_command", "description": "Runs a shell command.", "parameters": { "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"] } },
++            { "name": "edit_file", "description": "Edits a file.", "parameters": { "type": "object", "properties": { "path": { "type": "string" }, "old": { "type": "string" }, "new": { "type": "string" } }, "required": ["path", "old", "new"] } },
++            { "name": "call_mcp_tool", "description": "Calls a tool on an MCP server.", "parameters": { "type": "object", "properties": { "server": { "type": "string" }, "tool": { "type": "string" } }, "required": ["server", "tool"] } }
++          ]
++        }
++      ],
++      "generationConfig": { "temperature": 0 },
++      "labels": {},
++      "sessionId": "fixture-session"
++    }
++  },
++  "replySse": [
++    {
++      "response": {
++        "candidates": [
++          {
++            "content": {
++              "role": "model",
++              "parts": [
++                {
++                  "functionCall": { "name": "edit_file", "args": { "path": "a.ts", "old": "1", "new": "2" } },
++                  "thoughtSignature": "ZmFrZS1zaWctaGlzdC1uZXh0"
++                }
++              ]
++            },
++            "finishReason": "STOP",
++            "index": 0
++          }
++        ],
++        "usageMetadata": { "promptTokenCount": 140, "candidatesTokenCount": 11, "thoughtsTokenCount": 3, "totalTokenCount": 154 },
++        "modelVersion": "gemini-3-pro",
++        "responseId": "resp-history-1"
++      },
++      "traceId": "trace-history-1",
++      "metadata": {}
++    }
++  ],
++  "replyJson": {
++    "response": {
++      "candidates": [
++        {
++          "content": {
++            "role": "model",
++            "parts": [
++              {
++                "functionCall": { "name": "edit_file", "args": { "path": "a.ts", "old": "1", "new": "2" } },
++                "thoughtSignature": "ZmFrZS1zaWctaGlzdC1uZXh0"
++              }
++            ]
++          },
++          "finishReason": "STOP",
++          "index": 0
++        }
++      ],
++      "usageMetadata": { "promptTokenCount": 140, "candidatesTokenCount": 11, "thoughtsTokenCount": 3, "totalTokenCount": 154 },
++      "modelVersion": "gemini-3-pro",
++      "responseId": "resp-history-1"
++    },
++    "traceId": "trace-history-1",
++    "metadata": {}
++  }
++}
+diff --git a/test/fixtures/codeassist/parallel-calls.json b/test/fixtures/codeassist/parallel-calls.json
+new file mode 100644
+index 0000000..b174f61
+--- /dev/null
++++ b/test/fixtures/codeassist/parallel-calls.json
+@@ -0,0 +1,83 @@
++{
++  "description": "FAKE fixture. Parallel calls: the model asks for two files in one message. Only the first functionCall part carries a thoughtSignature, and both functionResponse parts answer in the same user message. Signature is an invented base64 string.",
++  "rules": "https://docs.cloud.google.com/vertex-ai/generative-ai/docs/thought-signatures",
++  "request": {
++    "model": "gemini-3-pro",
++    "project": "proj-fixture",
++    "requestId": "fixture-parallel-1",
++    "userAgent": "agy/1.4.7",
++    "requestType": "agent",
++    "request": {
++      "contents": [
++        { "role": "user", "parts": [{ "text": "Read a.ts and b.ts and compare them." }] },
++        {
++          "role": "model",
++          "parts": [
++            {
++              "functionCall": { "name": "read_file", "args": { "path": "a.ts" } },
++              "thoughtSignature": "ZmFrZS1zaWctcGFyLUE="
++            },
++            {
++              "functionCall": { "name": "read_file", "args": { "path": "b.ts" } }
++            }
++          ]
++        },
++        {
++          "role": "user",
++          "parts": [
++            { "functionResponse": { "name": "read_file", "response": { "content": "export const a = 1;" } } },
++            { "functionResponse": { "name": "read_file", "response": { "content": "export const b = 2;" } } }
++          ]
++        }
++      ],
++      "systemInstruction": { "parts": [{ "text": "You are a coding agent." }] },
++      "tools": [
++        {
++          "functionDeclarations": [
++            { "name": "read_file", "description": "Reads a file.", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] } },
++            { "name": "run_command", "description": "Runs a shell command.", "parameters": { "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"] } },
++            { "name": "edit_file", "description": "Edits a file.", "parameters": { "type": "object", "properties": { "path": { "type": "string" }, "old": { "type": "string" }, "new": { "type": "string" } }, "required": ["path", "old", "new"] } },
++            { "name": "call_mcp_tool", "description": "Calls a tool on an MCP server.", "parameters": { "type": "object", "properties": { "server": { "type": "string" }, "tool": { "type": "string" } }, "required": ["server", "tool"] } }
++          ]
++        }
++      ],
++      "generationConfig": { "temperature": 0 },
++      "labels": {},
++      "sessionId": "fixture-session"
++    }
++  },
++  "replySse": [
++    {
++      "response": {
++        "candidates": [
++          {
++            "content": { "role": "model", "parts": [{ "text": "a.ts exports 1 and b.ts exports 2." }] },
++            "finishReason": "STOP",
++            "index": 0
++          }
++        ],
++        "usageMetadata": { "promptTokenCount": 230, "candidatesTokenCount": 4, "thoughtsTokenCount": 2, "totalTokenCount": 236 },
++        "modelVersion": "gemini-3-pro",
++        "responseId": "resp-parallel-1"
++      },
++      "traceId": "trace-parallel-1",
++      "metadata": {}
++    }
++  ],
++  "replyJson": {
++    "response": {
++      "candidates": [
++        {
++          "content": { "role": "model", "parts": [{ "text": "a.ts exports 1 and b.ts exports 2." }] },
++          "finishReason": "STOP",
++          "index": 0
++        }
++      ],
++      "usageMetadata": { "promptTokenCount": 230, "candidatesTokenCount": 4, "thoughtsTokenCount": 2, "totalTokenCount": 236 },
++      "modelVersion": "gemini-3-pro",
++      "responseId": "resp-parallel-1"
++    },
++    "traceId": "trace-parallel-1",
++    "metadata": {}
++  }
++}
+diff --git a/test/fixtures/codeassist/sequential-turn.json b/test/fixtures/codeassist/sequential-turn.json
+new file mode 100644
+index 0000000..98fe985
+--- /dev/null
++++ b/test/fixtures/codeassist/sequential-turn.json
+@@ -0,0 +1,106 @@
++{
++  "description": "FAKE fixture. One turn with sequential steps: each model functionCall part carries a thoughtSignature. The request is the one sent after step 2, so it must contain signatures A and B. Signatures are invented base64 strings, not values issued by Google.",
++  "rules": "https://docs.cloud.google.com/vertex-ai/generative-ai/docs/thought-signatures",
++  "request": {
++    "model": "gemini-3-pro",
++    "project": "proj-fixture",
++    "requestId": "fixture-sequential-1",
++    "userAgent": "agy/1.4.7",
++    "requestType": "agent",
++    "request": {
++      "contents": [
++        { "role": "user", "parts": [{ "text": "Find the build error and fix it." }] },
++        {
++          "role": "model",
++          "parts": [
++            {
++              "functionCall": { "name": "read_file", "args": { "path": "src/build.ts" } },
++              "thoughtSignature": "ZmFrZS1zaWctc2VxLUE="
++            }
++          ]
++        },
++        {
++          "role": "user",
++          "parts": [{ "functionResponse": { "name": "read_file", "response": { "content": "export const build = () => 1;" } } }]
++        },
++        {
++          "role": "model",
++          "parts": [
++            {
++              "functionCall": { "name": "run_command", "args": { "command": "pnpm test" } },
++              "thoughtSignature": "ZmFrZS1zaWctc2VxLUI="
++            }
++          ]
++        },
++        {
++          "role": "user",
++          "parts": [{ "functionResponse": { "name": "run_command", "response": { "exit_code": 1, "stderr": "FAIL build.test.ts" } } }]
++        }
++      ],
++      "systemInstruction": { "parts": [{ "text": "You are a coding agent." }] },
++      "tools": [
++        {
++          "functionDeclarations": [
++            { "name": "read_file", "description": "Reads a file.", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] } },
++            { "name": "run_command", "description": "Runs a shell command.", "parameters": { "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"] } },
++            { "name": "edit_file", "description": "Edits a file.", "parameters": { "type": "object", "properties": { "path": { "type": "string" }, "old": { "type": "string" }, "new": { "type": "string" } }, "required": ["path", "old", "new"] } },
++            { "name": "call_mcp_tool", "description": "Calls a tool on an MCP server.", "parameters": { "type": "object", "properties": { "server": { "type": "string" }, "tool": { "type": "string" } }, "required": ["server", "tool"] } }
++          ]
++        }
++      ],
++      "generationConfig": { "temperature": 0 },
++      "labels": {},
++      "sessionId": "fixture-session"
++    }
++  },
++  "replySse": [
++    {
++      "response": {
++        "candidates": [
++          {
++            "content": {
++              "role": "model",
++              "parts": [
++                {
++                  "functionCall": { "name": "edit_file", "args": { "path": "src/build.ts", "old": "() => 1", "new": "() => 2" } },
++                  "thoughtSignature": "ZmFrZS1zaWctc2VxLUM="
++                }
++              ]
++            },
++            "finishReason": "STOP",
++            "index": 0
++          }
++        ],
++        "usageMetadata": { "promptTokenCount": 412, "candidatesTokenCount": 18, "thoughtsTokenCount": 6, "totalTokenCount": 436 },
++        "modelVersion": "gemini-3-pro",
++        "responseId": "resp-sequential-1"
++      },
++      "traceId": "trace-sequential-1",
++      "metadata": {}
++    }
++  ],
++  "replyJson": {
++    "response": {
++      "candidates": [
++        {
++          "content": {
++            "role": "model",
++            "parts": [
++              {
++                "functionCall": { "name": "edit_file", "args": { "path": "src/build.ts", "old": "() => 1", "new": "() => 2" } },
++                "thoughtSignature": "ZmFrZS1zaWctc2VxLUM="
++              }
++            ]
++          },
++          "finishReason": "STOP",
++          "index": 0
++        }
++      ],
++      "usageMetadata": { "promptTokenCount": 412, "candidatesTokenCount": 18, "thoughtsTokenCount": 6, "totalTokenCount": 436 },
++      "modelVersion": "gemini-3-pro",
++      "responseId": "resp-sequential-1"
++    },
++    "traceId": "trace-sequential-1",
++    "metadata": {}
++  }
++}
+diff --git a/test/fixtures/codeassist/streamed-signature.json b/test/fixtures/codeassist/streamed-signature.json
+new file mode 100644
+index 0000000..9bd7d7a
+--- /dev/null
++++ b/test/fixtures/codeassist/streamed-signature.json
+@@ -0,0 +1,80 @@
++{
++  "description": "FAKE fixture. Streamed reply in three SSE events. The thoughtSignature arrives in a part with text \"\" in the event just before the finishReason event. The JSON reply carries the same signature in the last part. Signature is an invented base64 string.",
++  "rules": "https://docs.cloud.google.com/vertex-ai/generative-ai/docs/thought-signatures",
++  "request": {
++    "model": "gemini-3-pro",
++    "project": "proj-fixture",
++    "requestId": "fixture-streamed-1",
++    "userAgent": "agy/1.4.7",
++    "requestType": "agent",
++    "request": {
++      "contents": [{ "role": "user", "parts": [{ "text": "Summarize the README." }] }],
++      "systemInstruction": { "parts": [{ "text": "You are a coding agent." }] },
++      "tools": [
++        {
++          "functionDeclarations": [
++            { "name": "read_file", "description": "Reads a file.", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] } },
++            { "name": "run_command", "description": "Runs a shell command.", "parameters": { "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"] } },
++            { "name": "edit_file", "description": "Edits a file.", "parameters": { "type": "object", "properties": { "path": { "type": "string" }, "old": { "type": "string" }, "new": { "type": "string" } }, "required": ["path", "old", "new"] } },
++            { "name": "call_mcp_tool", "description": "Calls a tool on an MCP server.", "parameters": { "type": "object", "properties": { "server": { "type": "string" }, "tool": { "type": "string" } }, "required": ["server", "tool"] } }
++          ]
++        }
++      ],
++      "generationConfig": { "temperature": 0 },
++      "labels": {},
++      "sessionId": "fixture-session"
++    }
++  },
++  "replySse": [
++    {
++      "response": {
++        "candidates": [{ "content": { "role": "model", "parts": [{ "text": "Vou ler o README." }] }, "index": 0 }],
++        "modelVersion": "gemini-3-pro",
++        "responseId": "resp-streamed-1"
++      },
++      "traceId": "trace-streamed-1",
++      "metadata": {}
++    },
++    {
++      "response": {
++        "candidates": [{ "content": { "role": "model", "parts": [{ "text": "", "thoughtSignature": "ZmFrZS1zaWctc3RyZWFt" }] }, "index": 0 }],
++        "modelVersion": "gemini-3-pro",
++        "responseId": "resp-streamed-1"
++      },
++      "traceId": "trace-streamed-1",
++      "metadata": {}
++    },
++    {
++      "response": {
++        "candidates": [{ "content": { "role": "model", "parts": [] }, "finishReason": "STOP", "index": 0 }],
++        "usageMetadata": { "promptTokenCount": 96, "candidatesTokenCount": 9, "thoughtsTokenCount": 4, "totalTokenCount": 109 },
++        "modelVersion": "gemini-3-pro",
++        "responseId": "resp-streamed-1"
++      },
++      "traceId": "trace-streamed-1",
++      "metadata": {}
++    }
++  ],
++  "replyJson": {
++    "response": {
++      "candidates": [
++        {
++          "content": {
++            "role": "model",
++            "parts": [
++              { "text": "Vou ler o README." },
++              { "text": "", "thoughtSignature": "ZmFrZS1zaWctc3RyZWFt" }
++            ]
++          },
++          "finishReason": "STOP",
++          "index": 0
++        }
++      ],
++      "usageMetadata": { "promptTokenCount": 96, "candidatesTokenCount": 9, "thoughtsTokenCount": 4, "totalTokenCount": 109 },
++      "modelVersion": "gemini-3-pro",
++      "responseId": "resp-streamed-1"
++    },
++    "traceId": "trace-streamed-1",
++    "metadata": {}
++  }
++}
+diff --git a/test/health.test.ts b/test/health.test.ts
+index 1df36d7..ca15a4f 100644
+--- a/test/health.test.ts
++++ b/test/health.test.ts
+@@ -111,6 +111,67 @@ async function startWithoutKey(): Promise<string> {
+   return output.join("\n");
+ }
+ 
++// @ts-ignore: bin/ is plain JavaScript outside the tsconfig include; resolved at runtime.
++const clients = await import("../bin/clients.mjs");
++
++describe("jev-agy launcher (passthroughOnly)", () => {
++  const agy = clients.agy as LauncherSpec;
++  const agyUpstream = "https://daily-cloudcode-pa.googleapis.com";
++  const refused = () =>
++    Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }) });
++
++  it("starts the router without asking for or needing a Jev key", async () => {
++    // First probe: nothing running. Once the router is spawned, its health answers.
++    let probes = 0;
++    installFetch(async () => {
++      probes += 1;
++      if (probes === 1) throw refused();
++      return Response.json({ status: "ok", upstream: agyUpstream });
++    });
++    (childProcess.spawn as any).mockReturnValueOnce({ pid: 4242, unref: vi.fn(), once: vi.fn() });
++    process.argv = [...process.argv.slice(0, 2), "--start"];
++
++    await runLauncher(agy);
++
++    expect(process.exit).not.toHaveBeenCalled();
++    expect(output.join("\n")).not.toContain("no API key");
++    expect(childProcess.spawn).toHaveBeenCalledTimes(1);
++    // loadConfig forces routing off and refuses shadow for JEV_CLIENT=agy, so no Jev key reaches it.
++    const env = (childProcess.spawn.mock.calls[0] as any[])[2].env as Record<string, string>;
++    expect(env).toMatchObject({ JEV_CLIENT: "agy", UPSTREAM_BASE_URL: agyUpstream });
++    expect(env).not.toHaveProperty("ROUTER_API_KEY");
++    expect(env).not.toHaveProperty("UPSTREAM_API_KEY");
++    expect(output.join("\n")).toContain("router up on http://127.0.0.1:8794");
++  });
++
++  it("--setup explains that agy uses no Jev key and asks nothing", async () => {
++    installFetch(async () => {
++      throw new Error("unexpected fetch");
++    });
++    process.argv = [...process.argv.slice(0, 2), "--setup"];
++
++    await runLauncher(agy);
++
++    expect(process.exit).not.toHaveBeenCalled();
++    expect(output.join("\n")).toContain("no Jev key is needed");
++    expect(output.join("\n")).not.toContain("needs a terminal");
++    expect(childProcess.spawn).not.toHaveBeenCalled();
++    expect(healthFetch).not.toHaveBeenCalled();
++  });
++
++  it("--status reports that no CLI key is used instead of asking for one", async () => {
++    installFetch(async () => {
++      throw refused();
++    });
++    process.argv = [...process.argv.slice(0, 2), "--status"];
++
++    await runLauncher(agy);
++
++    expect(output.join("\n")).toContain("CLI key: not used");
++    expect(output.join("\n")).not.toContain("run `jev-agy --setup`");
++  });
++});
++
+ describe("shared launcher health validation", () => {
+   it("does not treat status:error as a running gateway even when its upstream matches", async () => {
+     installFetch(async () => Response.json({ status: "error", upstream }));
+diff --git a/test/isolate-home.setup.ts b/test/isolate-home.setup.ts
+new file mode 100644
+index 0000000..684dfe6
+--- /dev/null
++++ b/test/isolate-home.setup.ts
+@@ -0,0 +1,39 @@
++// vitest setupFiles: runs before each test file. On Windows os.homedir() reads USERPROFILE (not HOME),
++// so every variable that can move the home directory points at a fresh temporary directory, and the
++// run refuses to continue if os.homedir() still resolves to the real user home.
++import { createHash } from "node:crypto";
++import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
++import { homedir, tmpdir } from "node:os";
++import { join, parse, resolve } from "node:path";
++import { afterAll } from "vitest";
++
++const fingerprint = (path: string) => createHash("sha256").update(resolve(path).toLowerCase()).digest("hex");
++
++// The real home is identified by a fingerprint, so no user path is written into the repository. A wrapper
++// that isolates the run first passes its own fingerprint in JEV_REAL_HOME_SHA256; otherwise the value
++// captured here, before anything is overridden, is the real home.
++const realHomeFingerprint = process.env.JEV_REAL_HOME_SHA256 ?? fingerprint(homedir());
++
++const home = mkdtempSync(join(tmpdir(), "jev-test-home-"));
++const appData = join(home, "AppData", "Roaming");
++mkdirSync(appData, { recursive: true });
++const { root } = parse(home);
++
++Object.assign(process.env, {
++  HOME: home,
++  USERPROFILE: home,
++  APPDATA: appData,
++  ...(process.platform === "win32" ? { HOMEDRIVE: root.replace(/[\\/]+$/, ""), HOMEPATH: home.slice(root.length - 1) } : {}),
++});
++
++if (resolve(homedir()) !== resolve(home) || fingerprint(homedir()) === realHomeFingerprint) {
++  throw new Error("test isolation failed: os.homedir() does not point at the temporary test home; refusing to run");
++}
++
++afterAll(() => {
++  try {
++    rmSync(home, { recursive: true, force: true });
++  } catch {
++    // A leftover temporary directory is harmless; the run's result does not depend on it.
++  }
++});
+diff --git a/test/kilo.test.ts b/test/kilo.test.ts
+index 359c760..4b1a97e 100644
+--- a/test/kilo.test.ts
++++ b/test/kilo.test.ts
+@@ -141,7 +141,7 @@ interface LauncherSpec {
+ }
+ 
+ const kilo = clients.kilo as LauncherSpec;
+-const others = [clients.codex, clients.claude, clients.opencode, clients.gemini] as LauncherSpec[];
++const others = [clients.codex, clients.claude, clients.opencode, clients.gemini, clients.agy] as LauncherSpec[];
+ const origin = "http://127.0.0.1:8793";
+ const launcherBin = fileURLToPath(new URL("../bin/jev-kilo.mjs", import.meta.url));
+ 
+diff --git a/test/launcher.test.ts b/test/launcher.test.ts
+index 1f2aee8..003bf80 100644
+--- a/test/launcher.test.ts
++++ b/test/launcher.test.ts
+@@ -16,6 +16,7 @@ interface LauncherSpec {
+   args?: (origin: string) => string[];
+   env?: (origin: string) => Record<string, string>;
+   configHelp: (origin: string) => string;
++  passthroughOnly?: boolean;
+ }
+ 
+ const opencode = clients.opencode as LauncherSpec;
+@@ -188,6 +189,18 @@ describe("jev-devin entrypoint", () => {
+   });
+ });
+ 
++describe("jev-agy spec", () => {
++  const agy = clients.agy as LauncherSpec;
++
++  it("is passthrough-only: no Jev key is asked for or needed", () => {
++    expect(agy.passthroughOnly).toBe(true);
++    expect(agy.client).toBe("agy");
++    expect(codex.passthroughOnly).toBeUndefined();
++    expect(claude.passthroughOnly).toBeUndefined();
++    expect(devin.passthroughOnly).toBeUndefined();
++  });
++});
++
+ describe("existing launchers", () => {
+   it("keeps the codex and claude specs intact", () => {
+     expect(codex.name).toBe("jev-codex");
+diff --git a/test/setup.test.ts b/test/setup.test.ts
+index 3c9b4ab..3d9ae6b 100644
+--- a/test/setup.test.ts
++++ b/test/setup.test.ts
+@@ -1,7 +1,7 @@
+ import { execFileSync } from "node:child_process";
+ import { mkdtempSync, readFileSync, statSync } from "node:fs";
+ import { tmpdir } from "node:os";
+-import { join, resolve } from "node:path";
++import { join, parse, resolve } from "node:path";
+ import { describe, expect, it } from "vitest";
+ // @ts-expect-error plain ESM module without types
+ import { configuredProvider, loadProviders, runSetup, saveEnv, upsertEnv, validateKey } from "../bin/setup.mjs";
+@@ -9,6 +9,17 @@ import { configuredProvider, loadProviders, runSetup, saveEnv, upsertEnv, valida
+ const ROOT = resolve(import.meta.dirname, "..");
+ const providers = loadProviders(ROOT);
+ 
++/** Every variable that moves the home directory: on Windows os.homedir() reads USERPROFILE, not HOME. */
++function homeEnv(home: string): Record<string, string> {
++  const { root } = parse(home);
++  return {
++    HOME: home,
++    USERPROFILE: home,
++    APPDATA: join(home, "AppData", "Roaming"),
++    ...(process.platform === "win32" ? { HOMEDRIVE: root.replace(/[\\/]+$/, ""), HOMEPATH: home.slice(root.length - 1) } : {}),
++  };
++}
++
+ /** A scripted user: answers are handed out in order, and everything printed is kept. */
+ function script(answers: string[]) {
+   const printed: string[] = [];
+@@ -164,7 +175,7 @@ describe("saving and launching", () => {
+ 
+   it("without a terminal, a launcher names what is missing instead of hanging on a question", () => {
+     const home = mkdtempSync(join(tmpdir(), "jev-home-"));
+-    const env = { PATH: process.env.PATH, HOME: home, JEV_CODEX_PORT: "8999", JEV_SKIP_PROJECT_ENV: "1" };
++    const env = { PATH: process.env.PATH, ...homeEnv(home), JEV_CODEX_PORT: "8999", JEV_SKIP_PROJECT_ENV: "1" };
+     let output = "";
+     try {
+       execFileSync(process.execPath, [join(ROOT, "bin/jev-codex.mjs"), "--start"], { env, cwd: home, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000 });
+diff --git a/test/usage.test.ts b/test/usage.test.ts
+index 26c5bf1..6c15ee0 100644
+--- a/test/usage.test.ts
++++ b/test/usage.test.ts
+@@ -83,6 +83,23 @@ describe("usage in a reply", () => {
+     });
+   });
+ 
++  it.each([
++    { format: "Gemini API", wrap: (u: object) => u },
++    { format: "Code Assist", wrap: (u: object) => ({ response: u }) },
++  ])("counts Gemini thoughts as output and reasoning, for the $format envelope", async ({ wrap }) => {
++    // Cumulative reports: the last one wins, and the counts are never added across events.
++    const usage = (candidates: number) => wrap({
++      usageMetadata: { promptTokenCount: 100, candidatesTokenCount: candidates, thoughtsTokenCount: 93, cachedContentTokenCount: 64 },
++    });
++    const reply = await readReply(sse([usage(8), usage(8), usage(9)]));
++    expect(reply.usage).toEqual({ input: 100, output: 102, cached: 64, cacheWrite: 0, reasoning: 93 });
++  });
++
++  it("keeps the old Gemini reading when a report has no thoughts", async () => {
++    const usage = await readUsage(sse([{ usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 20 } }]));
++    expect(usage).toEqual({ input: 100, output: 20, cached: 0, cacheWrite: 0, reasoning: 0 });
++  });
++
+   it("reports nothing rather than zeros when the reply never said", async () => {
+     expect(await readUsage(new Response("<html>bad gateway</html>", { status: 502 }))).toBeUndefined();
+   });
+diff --git a/vitest.config.ts b/vitest.config.ts
+new file mode 100644
+index 0000000..a7dc703
+--- /dev/null
++++ b/vitest.config.ts
+@@ -0,0 +1,8 @@
++import { defineConfig } from "vitest/config";
++
++export default defineConfig({
++  test: {
++    // Points HOME/USERPROFILE/HOMEDRIVE/HOMEPATH/APPDATA at a temporary directory for each test file.
++    setupFiles: ["test/isolate-home.setup.ts"],
++  },
++});

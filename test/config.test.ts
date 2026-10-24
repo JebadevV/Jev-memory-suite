@@ -43,7 +43,10 @@ test('profiles without the new keys parse with legacy redirect on, both experime
   const c = configSchema.parse(await legacyConfig());
   assert.deepEqual(c.dashboard, { port: 18879 });
   assert.deepEqual(c.gatewayExperiment, { claude: 'default', codex: 'default' });
-  assert.deepEqual(c.observability, { pricing: { models: {} } });
+  assert.deepEqual(Object.keys(c.observability.pricing.models).sort(), ['gemini-3.5-flash-lite', 'gemini-3.8-flash']);
+  assert.deepEqual(c.observability.pricing.aliases, {});
+  assert.equal(c.observability.pricing.jev, undefined);
+  assert.deepEqual(c.observability.billing, { claude: 'unknown', codex: 'unknown', agy: 'subscription' });
 });
 test('empty gatewayExperiment object fills both clients with default', async () => {
   const c = configSchema.parse({ ...await legacyConfig(), gatewayExperiment: {} });
@@ -60,7 +63,8 @@ test('pricing accepts a two-model map and keeps each model price separate', asyn
   const base = await legacyConfig();
   const models = { 'claude-opus-5-5': validPrice, 'claude-haiku-5-5': { ...validPrice, inputPerMTok: 1 } };
   const c = configSchema.parse({ ...base, observability: { pricing: { models } } });
-  assert.deepEqual(c.observability.pricing.models, models);
+  assert.deepEqual(c.observability.pricing.models['claude-opus-5-5'], validPrice);
+  assert.deepEqual(c.observability.pricing.models['claude-haiku-5-5'], { ...validPrice, inputPerMTok: 1 });
 });
 test('price accepts a valid LLM price and rejects negative, NaN, out-of-range and misdated values', async () => {
   const base = await legacyConfig();
@@ -104,6 +108,54 @@ test('jev price takes input and output rates only and rejects cache fields', asy
   const withJev = (price: unknown) => ({ ...base, observability: { pricing: { jev: price } } });
   assert.equal(configSchema.safeParse(withJev(jev)).success, true);
   assert.equal(configSchema.safeParse(withJev({ ...jev, cacheReadPerMTok: 0.1 })).success, false);
+});
+test('the verified Gemini defaults price exactly the two observed ids, with source, verification date and expiry', async () => {
+  const c = configSchema.parse(await legacyConfig());
+  const source = 'https://ai.google.dev/gemini-api/docs/pricing';
+  assert.deepEqual(c.observability.pricing.models['gemini-3.5-flash-lite'], {
+    currency: 'USD', source, verifiedAt: '2026-10-24', inputPerMTok: 0.3, cacheReadPerMTok: 0.03, cacheWritePerMTok: 0, outputPerMTok: 2.5,
+  });
+  assert.deepEqual(c.observability.pricing.models['gemini-3.8-flash'], {
+    currency: 'USD', source, verifiedAt: '2026-10-24', inputPerMTok: 0.75, cacheReadPerMTok: 0.075, cacheWritePerMTok: 0, outputPerMTok: 3.75,
+    validUntil: '2026-12-31',
+  });
+});
+test('a configured Claude price is merged with the Gemini defaults, which stay present', async () => {
+  const c = configSchema.parse({ ...await legacyConfig(), observability: { pricing: { models: { 'claude-opus-5-5': validPrice } } } });
+  assert.deepEqual(Object.keys(c.observability.pricing.models).sort(), ['claude-opus-5-5', 'gemini-3.5-flash-lite', 'gemini-3.8-flash']);
+  assert.equal(c.observability.pricing.models['gemini-3.8-flash']?.validUntil, '2026-12-31');
+});
+test('a configured price for a default model id overrides that default and leaves the other default in place', async () => {
+  const override = { ...validPrice, source: 'operator rate card', verifiedAt: '2026-10-30', inputPerMTok: 1, outputPerMTok: 2 };
+  const c = configSchema.parse({ ...await legacyConfig(), observability: { pricing: { models: { 'gemini-3.8-flash': override } } } });
+  assert.deepEqual(c.observability.pricing.models['gemini-3.8-flash'], override, 'the configured price wins, validUntil included only if configured');
+  assert.equal(c.observability.pricing.models['gemini-3.5-flash-lite']?.inputPerMTok, 0.3);
+});
+test('validUntil accepts a calendar date and rejects any other text', async () => {
+  const base = await legacyConfig();
+  const withUntil = (validUntil: unknown) => withModel(base, { ...validPrice, validUntil });
+  assert.equal(configSchema.safeParse(withUntil('2026-12-31')).success, true);
+  assert.equal(configSchema.safeParse(withUntil('31/12/2026')).success, false);
+  assert.equal(configSchema.safeParse(withUntil('2026-12-31T00:00:00Z')).success, false);
+});
+test('pricing aliases default to empty, accept observed-to-priced model ids, and reject bad names or more than 100 entries', async () => {
+  const base = await legacyConfig();
+  const aliases = { 'gemini-3.8-flash-high': 'gemini-3.8-flash' };
+  assert.deepEqual(configSchema.parse(base).observability.pricing.aliases, {});
+  assert.deepEqual(configSchema.parse({ ...base, observability: { pricing: { models: {}, aliases } } }).observability.pricing.aliases, aliases);
+  assert.equal(configSchema.safeParse({ ...base, observability: { pricing: { aliases: { 'bad name': 'gemini-3.8-flash' } } } }).success, false);
+  assert.equal(configSchema.safeParse({ ...base, observability: { pricing: { aliases: { 'gemini-3.8-flash-high': 'bad name' } } } }).success, false);
+  const many = Object.fromEntries(Array.from({ length: 101 }, (_, i) => [`alias-${i}`, 'gemini-3.8-flash']));
+  assert.equal(configSchema.safeParse({ ...base, observability: { pricing: { aliases: many } } }).success, false);
+});
+test('billing defaults per client and accepts only api, subscription or unknown', async () => {
+  const base = await legacyConfig();
+  assert.deepEqual(configSchema.parse({ ...base, observability: { billing: { claude: 'api' } } }).observability.billing, { claude: 'api', codex: 'unknown', agy: 'subscription' });
+  for (const mode of ['api', 'subscription', 'unknown']) {
+    assert.equal(configSchema.safeParse({ ...base, observability: { billing: { agy: mode } } }).success, true, mode);
+  }
+  assert.equal(configSchema.safeParse({ ...base, observability: { billing: { claude: 'free' } } }).success, false);
+  assert.equal(configSchema.safeParse({ ...base, observability: { billing: { gemini: 'api' } } }).success, false);
 });
 test('headroom defaults to off on the pinned release for profiles that predate it', async () => {
   const legacy = await legacyConfig(); delete legacy.headroom;

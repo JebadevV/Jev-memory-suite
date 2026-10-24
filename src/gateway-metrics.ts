@@ -24,9 +24,11 @@ export interface RecentDecision {
   jevLatencyMs: number | null; durationMs: number | null; input: number; cacheRead: number; output: number;
   path: string; tools: number; status: number | null; reasoning: number; shadow: boolean;
 }
-export interface LlmPrice { inputPerMTok: number; cacheReadPerMTok: number; cacheWritePerMTok: number; outputPerMTok: number; currency: 'USD'; source: string; verifiedAt: string }
+// validUntil is the last UTC day (YYYY-MM-DD, inclusive) the rates apply; absent means no end date.
+export interface LlmPrice { inputPerMTok: number; cacheReadPerMTok: number; cacheWritePerMTok: number; outputPerMTok: number; currency: 'USD'; source: string; verifiedAt: string; validUntil?: string }
 export interface JevPrice { inputPerMTok: number; outputPerMTok: number; currency: 'USD'; source: string; verifiedAt: string }
-export interface CostEstimate { currency: 'USD'; llm: number | null; jev: number | null; total: number | null; missing: string[] }
+// aliased maps an observed model to the priced model whose rates were assumed for it. Present only when such a price was used.
+export interface CostEstimate { currency: 'USD'; llm: number | null; jev: number | null; total: number | null; missing: string[]; aliased?: Record<string, string> }
 
 type LlmTotals = RouteMetrics['llm'];
 type ConfidenceCounts = RouteMetrics['jev']['confidence'];
@@ -384,18 +386,48 @@ function jevPriceUsable(price: JevPrice | undefined): price is JevPrice {
 const roundCost = (value: number | null): number | null => (value === null ? null : Math.round(value * COST_DECIMALS) / COST_DECIMALS);
 
 // Estimates only from logged counts. Jev output tokens are never logged upstream, so no Jev output cost is ever counted.
+// With no Jev calls at all (e.g. a pass-through gateway), the Jev cost is exactly 0 and nothing Jev-related is missing.
 export function estimateCost(m: RouteMetrics, llm?: LlmPrice, jev?: JevPrice): CostEstimate {
   const llmCost = llmPriceUsable(llm)
     ? (m.llm.uncachedInput * llm.inputPerMTok + m.llm.cacheRead * llm.cacheReadPerMTok
       + m.llm.cacheWrite * llm.cacheWritePerMTok + m.llm.output * llm.outputPerMTok) / TOKENS_PER_MTOK
     : null;
-  const jevCost = jevPriceUsable(jev) ? (m.jev.inputTokens * jev.inputPerMTok) / TOKENS_PER_MTOK : null;
+  const jevUnused = m.jev.calls === 0 && m.jev.inputTokens === 0;
+  const jevCost = jevUnused ? 0 : jevPriceUsable(jev) ? (m.jev.inputTokens * jev.inputPerMTok) / TOKENS_PER_MTOK : null;
   const missing: string[] = [];
   if (llmCost === null) missing.push('llm-price');
-  if (jevCost === null) missing.push('jev-price');
-  missing.push('jev-output-tokens');
+  if (!jevUnused) {
+    if (jevCost === null) missing.push('jev-price');
+    missing.push('jev-output-tokens');
+  }
   const total = llmCost !== null && jevCost !== null ? llmCost + jevCost : null;
   return { currency: 'USD', llm: roundCost(llmCost), jev: roundCost(jevCost), total: roundCost(total), missing };
+}
+
+// A missing-price entry for one model: no price, or a price whose validUntil day has passed.
+export const isLlmMissing = (item: string): boolean => item.startsWith('llm-price:') || item.startsWith('llm-price-expired:');
+
+export interface LlmPriceChoice { price?: LlmPrice; aliasedTo?: string; expired: boolean }
+// The rate for an observed model. Its own price wins; an alias applies only when its target has a price. A price is not used
+// after its validUntil day (today is a UTC YYYY-MM-DD), and an alias to an expired price is expired too.
+export function chooseLlmPrice(models: Record<string, LlmPrice> | undefined, aliases: Record<string, string> | undefined, model: string, today: string): LlmPriceChoice {
+  const direct = models !== undefined && Object.hasOwn(models, model);
+  const aliasTarget = !direct && aliases !== undefined && Object.hasOwn(aliases, model) ? aliases[model] : undefined;
+  const target = aliasTarget ?? model;
+  const price = models !== undefined && Object.hasOwn(models, target) ? models[target] : undefined;
+  if (price === undefined) return { expired: false };
+  if (price.validUntil !== undefined && today > price.validUntil) return { expired: true };
+  return aliasTarget === undefined ? { price, expired: false } : { price, aliasedTo: aliasTarget, expired: false };
+}
+
+// Cost of one model. Its missing entry names the observed model; an alias that was used is reported in `aliased`.
+export function estimateModelCost(model: string, m: RouteMetrics, choice: LlmPriceChoice, jev?: JevPrice): CostEstimate {
+  const base = estimateCost(m, choice.price, jev);
+  const missing = base.missing.filter(item => item !== 'llm-price');
+  if (base.llm === null) missing.unshift(choice.expired ? `llm-price-expired:${model}` : `llm-price:${model}`);
+  const cost: CostEstimate = { ...base, missing };
+  if (base.llm !== null && choice.aliasedTo !== undefined) cost.aliased = { [model]: choice.aliasedTo };
+  return cost;
 }
 
 // Per-model breakdown. Billing follows the model actually sent upstream (sentModel), which can differ from the requested model.

@@ -6,7 +6,7 @@ import { assertLocal, prepare, root } from './config.js';
 
 export function baseEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
-  for (const k of ['PATH', 'Path', 'SystemRoot', 'WINDIR', 'COMSPEC', 'PATHEXT', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'HOMEDRIVE', 'HOMEPATH', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE'])
+  for (const k of ['PATH', 'Path', 'SystemRoot', 'WINDIR', 'COMSPEC', 'PATHEXT', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'HOMEDRIVE', 'HOMEPATH', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'UV_TOOL_DIR'])
     if (process.env[k]) env[k] = process.env[k];
   env.TEMP = env.TMP = resolve(root, '.local/tmp');
   env.CARGO_HOME = resolve(root, '.local/cargo-home');

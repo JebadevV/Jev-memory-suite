@@ -19,8 +19,10 @@ O schema é estrito: campos desconhecidos são rejeitados. Todo arquivo passa po
 | `dashboard.port` | inteiro | 1024 a 65535; default do schema quando ausente | `18879` |
 | `gatewayExperiment.claude` | texto | `default`, `shadow` ou `metering`. Vale quando o roteador do Claude inicia. | `default` |
 | `gatewayExperiment.codex` | texto | `default`, `shadow` ou `metering`. Vale quando o roteador do Codex inicia. | `default` |
-| `observability.pricing.models` | objeto | Até 100 modelos. Cada chave é o nome do modelo (`^[A-Za-z0-9._:/@-]{1,80}$`) e cada valor tem `inputPerMTok`, `cacheReadPerMTok`, `cacheWritePerMTok` e `outputPerMTok` (números de 0 a 10000, por milhão de tokens), além de `currency` (`"USD"`), `source` (texto de 1 a 200 caracteres) e `verifiedAt` (`AAAA-MM-DD`). Não há preço padrão. | `{}` |
+| `observability.pricing.models` | objeto | Até 100 modelos configurados, mesclados aos padrões: o do usuário vence no mesmo id. Cada chave é o nome do modelo (`^[A-Za-z0-9._:/@-]{1,80}$`) e cada valor tem `inputPerMTok`, `cacheReadPerMTok`, `cacheWritePerMTok` e `outputPerMTok` (números de 0 a 10000, por milhão de tokens), além de `currency` (`"USD"`), `source` (texto de 1 a 200 caracteres), `verifiedAt` (`AAAA-MM-DD`) e `validUntil` (opcional, `AAAA-MM-DD`, último dia de vigência, inclusive). | dois padrões Gemini verificados; ver [configuração](../guides/configuration.md#preços-padrão) |
+| `observability.pricing.aliases` | objeto | Até 100 pares `modelo observado -> modelo com preço`, como equivalência assumida. Usado só quando o modelo observado não tem preço próprio e o alvo tem. A estimativa é marcada no painel. | `{}` |
 | `observability.pricing.jev` | objeto opcional | `inputPerMTok`, `outputPerMTok`, `currency`, `source` e `verifiedAt`, com as mesmas regras. Ausente significa sem preço do Jev. | ausente |
+| `observability.billing` | objeto | `claude`, `codex` e `agy`, cada um com `api`, `subscription` ou `unknown`. Define a base de cobrança exibida no card do cliente. Não altera o cálculo. | `claude` e `codex` `unknown`; `agy` `subscription` |
 | `gateway.enabled` | booleano | — | `false` |
 | `gateway.port` | inteiro | 1024 a 65535 | `18878` |
 | `gateway.upstreamUrl` | URL | HTTPS, ou `http://127.0.0.1`; sem credenciais, query ou fragmento; host na allowlist | `https://api.openai.com/v1` |

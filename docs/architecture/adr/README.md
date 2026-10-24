@@ -1,6 +1,6 @@
 # Decisões arquiteturais
 
-Propósito: índice das decisões arquiteturais, com estado e link para cada registro. Público: mantenedores. Data: 2026-10-23.
+Propósito: índice das decisões arquiteturais, com estado e link para cada registro. Público: mantenedores. Data: 2026-10-24.
 
 | ADR | Título | Estado |
 |---|---|---|
@@ -18,5 +18,7 @@ Propósito: índice das decisões arquiteturais, com estado e link para cada reg
 | [0012](0012-antigravity-cli-integration.md) | Integração com o Antigravity CLI (agy): hooks de workspace, MCP global e finalização pelo launcher | aceito |
 | [0013](0013-headroom-context-compression.md) | Headroom: compressão de contexto opcional para o Claude, antes do Jev Gateway | aceito (fase 1, somente Claude; estendida pela ADR 0014) |
 | [0014](0014-headroom-codex-routing.md) | Headroom para o Codex: roteamento pelo gateway Jev codex, com shim de runtime versionado | aceito (fase 2, Codex) |
+| [0015](0015-jev-gateway-antigravity-code-assist.md) | Jev Gateway para o Antigravity CLI: patch Code Assist com allowlist de métodos e passthrough | aceito (Marco 3: estabilização; roteamento ativo NO-GO) |
+| [0016](0016-test-isolation.md) | Isolamento do home nos testes: home temporário e sentinelas | aceito |
 
 Decisões aceitas não são reescritas. Uma mudança de direção exige um novo ADR com número seguinte, que cite o anterior.

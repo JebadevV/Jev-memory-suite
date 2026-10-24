@@ -2,7 +2,7 @@
 
 Propósito: descrever os procedimentos de registro, verificação, lançamento e validação do MCP e dos hooks em Claude CLI, Codex CLI, Codex Desktop e Antigravity CLI (agy), com as etapas de confiança que cada cliente exige. Público: usuários e validadores. Data: 2026-10-24.
 
-**Status de validação** (fonte: [tests.json](../../tests.json)): Claude Code CLI `passed` (os 9 eventos verificados em sessões reais; a TUI interativa não foi exercitada); Codex CLI `partial` (MCP aprovado; captura por hooks comprovada no Farol com bypass temporário; confiança normal dos hooks pendente do usuário); Codex Desktop `pending`, **não verificado** (precisa ser validado dentro do app, com o checklist abaixo); Antigravity CLI (`agy` 1.4.5) `passed` na CLI, com IDE e App não verificados ([seção própria](#antigravity-cli-agy)). Este guia descreve procedimentos e o que cada resultado comprovou.
+**Status de validação** (fonte: [tests.json](../../tests.json)): Claude Code CLI `passed` (os 9 eventos verificados em sessões reais; a TUI interativa não foi exercitada); Codex CLI `partial` (MCP aprovado; captura por hooks comprovada no Farol com bypass temporário; confiança normal dos hooks pendente do usuário); Codex Desktop `pending`, **não verificado** (precisa ser validado dentro do app, com o checklist abaixo); Antigravity CLI (`agy` 1.4.5) `passed` na CLI, com IDE e App não verificados, e gateway Code Assist validado com `agy` 1.4.7 ([seção própria](#antigravity-cli-agy)). Este guia descreve procedimentos e o que cada resultado comprovou.
 
 ## Superfícies
 
@@ -242,7 +242,7 @@ node bin/jev-memory.mjs codex --dashboard      # --status, --stop, --setup, --lo
 
 ## Antigravity CLI (agy)
 
-Estado: **aprovado na CLI** (agy 1.4.5, Windows 10, AI Memory 3.1.2, validado em 2026-10-23). IDE e App **não verificados**. A decisão está na [ADR 0012](../architecture/adr/0012-antigravity-cli-integration.md).
+Estado: **aprovado na CLI** (agy 1.4.5, Windows 10, AI Memory 3.1.2, validado em 2026-10-23). IDE e App **não verificados**. O gateway Code Assist do Jev foi validado com agy 1.4.7 em 2026-10-24 (ver [lançamento](#lançamento) e [operação](../runbooks/operations.md#gateway-do-agy-jev-gateway)). A decisão está na [ADR 0012](../architecture/adr/0012-antigravity-cli-integration.md).
 
 ### Registrar, verificar e remover
 
@@ -263,7 +263,15 @@ jev-memory clients remove antigravity .
 - Resolve o `agy` pelo PATH ou em `%LOCALAPPDATA%\agy\bin\agy.exe`.
 - Antes de abrir, verifica o serviço de memória, o registro dos hooks, o estado do MCP e o marcador de escopo. Problemas viram avisos.
 - Repassa argumentos, diretório e stdio sem alteração, e devolve o código de saída do `agy`.
-- Não há roteamento pelo Jev Gateway. O gateway só faz proxy de OpenAI e Anthropic, e o agy usa a conta Google do próprio usuário.
+- O agy passa pelo Jev Gateway em modo passthrough (Code Assist), com `CLOUD_CODE_URL=http://127.0.0.1:<porta>` definido só no processo do agy. Não há roteamento: o conteúdo não é enviado ao provedor do Jev. O token OAuth continua o da conta Google do próprio usuário.
+- Sem o gateway, o agy segue direto ao Google. O launcher só usa o gateway depois de verificar a versão do agy, a instalação do gateway, a porta e o health.
+- Mensagens no stderr:
+  - Sucesso: `Jev gateway: http://127.0.0.1:8794 (passthrough)`.
+  - Falha: `Jev not used: <motivo>`. Exemplos validados: `disabled by JMS_AGY_GATEWAY=off`, `CLOUD_CODE_URL already set` e `gateway health invalid: client, codeAssist, upstream`.
+- `JMS_AGY_GATEWAY=off` desliga o uso do gateway; o agy segue direto ao Google.
+- `JEV_AGY_PORT` escolhe a porta do gateway agy. Sem valor válido, usa 8794.
+- Só versões em `VALIDATED_AGY_VERSIONS` (hoje 1.4.7) usam o gateway. Outra versão segue direto ao Google até ser revalidada.
+- O gateway agy é persistente: continua de pé depois que o agy sai. Procedimentos de parada, versões e rollback estão em [operação](../runbooks/operations.md#gateway-do-agy-jev-gateway).
 
 ### Hooks
 
@@ -298,7 +306,9 @@ jev-memory clients remove antigravity .
 - O agy não tem evento de fim de sessão. Ao abrir com o launcher, este define um id aleatório em `JEV_MEMORY_AGY_LAUNCH`, e os hooks registram os ids de conversa desse lançamento.
 - Ao sair, o launcher executa `ai-memory finalize-session --agent antigravity-cli --session-id <id> --reopen` somente para esses ids, e depois apaga o registro. Sessões concorrentes não relacionadas não são tocadas. Falhas geram apenas aviso.
 - Para sessões não iniciadas pelo launcher, ou após uma queda do launcher, use `jev-memory agy-finalize [--session <id>]`. Sem id, finaliza a sessão agy aberta mais recente do projeto.
-- A finalização automática não é garantida após queda forçada do launcher. Veja [operação](../runbooks/operations.md#sessões-do-antigravity-cli-agy).
+- Fechar a janela do console envia `SIGHUP` ao launcher, que finaliza o próprio lançamento. O que não terminar em cerca de 7 s fica para a recuperação.
+- Antes de cada lançamento, a recuperação automática finaliza os lançamentos cujo dono (`<launchId>.owner.json`) tem pid morto, com o escopo gravado. Dono vivo, owner inválido ou escopo divergente não são tocados.
+- Após uma queda forçada, `jev-memory agy-finalize --recover` antecipa a recuperação. `--recover --legacy` também finaliza registros sem owner, de versões anteriores, com o config atual do perfil; confirme antes que nenhum agy está rodando. Veja [operação](../runbooks/operations.md#recuperação-e-fechamento-da-janela).
 
 ### Handoffs
 
@@ -327,3 +337,5 @@ Ambiente: agy 1.4.5, Windows 10, AI Memory 3.1.2.
 - `memory_status` pelo MCP do agy retornou o projeto correto.
 - Não verificado: IDE e App.
 - Registro em `M-agy-1` de [tests.json](../../tests.json).
+- Gateway Code Assist (2026-10-24, agy 1.4.7): passthrough validado com o agy real, com 2 chamadas registradas no log. Registro em `M-agy-4` de [tests.json](../../tests.json). Detalhes em [progress.md](../../progress.md).
+- Recuperação de sessões (2026-10-24, agy 1.4.7): e2e real 2/2 com janela de console, e recuperação do registro legado da janela fechada. Registro em `M-agy-5`.

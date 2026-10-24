@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-23T18:00:00.000Z",
+  "updatedAt": "2026-10-24T19:00:00.000Z",
   "checks": [
     {
       "id": "M0-executor",
@@ -841,6 +841,27 @@
       "observed": "agy 1.4.5, Windows 10, ai-memory 3.1.2 em 2026-10-23. Sessao real com agent_kind antigravity-cli e observacoes session-start, pre-tool-use, post-tool-use, stop e session-end (finalizada), zero erros de hook. Handoff entregue na sessao seguinte. memory_status pelo MCP do agy retornou o projeto correto. Headless -p nega MCP sem permissions.allow ou --dangerously-skip-permissions. IDE e App nao verificados."
     },
     {
+      "id": "M-agy-2",
+      "scope": "Jev Gateway no modo agy (Code Assist): tráfego do agy 1.4.7 observado por proxy transparente, com CLOUD_CODE_URL apontando para o proxy local",
+      "status": "passed",
+      "command": "proxy transparente local com CLOUD_CODE_URL apontando para ele; agy -p ping com a conta Google",
+      "observed": "agy 1.4.7, Windows 10, 2026-10-24, um ping com cota normal. 18 chamadas POST /v1internal:<método>, todas 200; agy exit 0. Métodos: loadCodeAssist, fetchAdminControls, fetchUserInfo, retrieveUserQuotaSummary, fetchAvailableModels, listExperiments, writeTrajectoryAcls, streamGenerateContent?alt=sse. Authorization Bearer em todas, repassado intacto. OAuth, feature flags e telemetria seguem diretos. SSE só com linhas data:, sem event:, sem compressão; JSON auxiliares em gzip. Duas gerações: gemini-3.5-flash-lite (119 tokens de prompt) e gemini-3.8-flash-high com 15 ferramentas (23.197 tokens de prompt). Config do agy (settings.json, config/mcp_config.json, config/config.json, settings.json) com hash idêntico antes e depois."
+    },
+    {
+      "id": "M-agy-3",
+      "scope": "Jev Gateway com patch codeassist-agy (0.5.1): modo agy com passthrough, rotas e recusas; install da suíte aplica o patch; validação ao vivo do agy com o gateway",
+      "status": "passed",
+      "command": "npm test (462/462); gateway com o patch em porta efêmera; agy -p ping com CLOUD_CODE_URL apontando para o gateway; requisições de teste ao gateway para métodos e caminhos negativos",
+      "observed": "Jev antes 400 (397 ok), depois 438 (435 ok); 38 novos em test/codeassist.test.ts. 3 falhas herdadas (setup.test.ts 2, opencode-coverage.test.ts 1) também existem sem o patch e são do upstream no Windows. Patch aplica limpo em cópia LF e CRLF; typecheck e build ok. Suíte: typecheck e lint ok; npm test 462/462, com 14 testes novos de install. Ao vivo: agy -p ping saiu com 0; 2 streamGenerateContent em passthrough, status 200, motivo routing_disabled, tokens 119/3 e 23.192/9 (prompt/saída), 15 ferramentas na segunda. Negativos 404: POST /v1/messages, POST /v1beta/models/x:generateContent, POST /v1internal:deleteEverything e GET /v1internal:loadCodeAssist. Log do gateway sem Bearer e sem o texto do prompt. Sem jev-memory install; gateways ativos não alterados. Não validado: resposta com functionCall, vários turnos com thoughtSignature, IDE e App."
+    },
+    {
+      "id": "M-agy-4",
+      "scope": "Jev Gateway no modo agy (Marco 2): patch v2 com tokens Gemini, passthroughOnly sem chave, health validado, launcher jev-memory-agy com gateway, install e rollback do gateway, dashboard com card Antigravity",
+      "status": "passed",
+      "command": "npm test (513/513); Jev com patch v2 (446 testes); jev-memory install gateway; jev-memory gateway-versions; jev-memory gateway-rollback 0d15... e 4e03...; jev-memory-agy -p ping; /health do gateway agy; fallbacks com JMS_AGY_GATEWAY=off, JEV_AGY_PORT=8789 e CLOUD_CODE_URL; snapshot do dashboard com logs reais",
+      "observed": "agy 1.4.7, Windows 10, 2026-10-24. Testes: typecheck, lint e npm test 513/513; build ok. Jev com patch v2: 446 testes, 444 passam; 2 falhas pre-existentes do upstream no Windows (opencode-coverage x1, setup x1, modo 0600 vira 0666), com home temporario. Patch v2 aplica limpo em LF e CRLF. Install real: previous 0d15e05e48151c3423a50558ede7e101d6c83ae8, current 4e03786dda52c2aecf9012181612da717015fe62, cerca de 4 s; versao antiga intacta. Rollback ida e volta ok; id invalido e versao inexistente recusados com exit 1. Gateway Claude (PID 24728, 8789) nao reiniciado. Launcher real: exit 0 e Jev gateway http://127.0.0.1:8794 (passthrough); /health client agy, codeAssist 1, upstream daily-cloudcode-pa, pid igual ao agy.pid; agy.log com 2 streamGenerateContent passthrough 200 routing_disabled; sem Bearer nem prompt no log. Sessao de memoria antigravity-cli com session-start, stop e session-end finalizada pelo launcher; sem erro de hook. Fallbacks reais: JMS_AGY_GATEWAY=off, JEV_AGY_PORT=8789 (gateway health invalid), CLOUD_CODE_URL ja definido; gateway parado sobe sozinho. Dashboard (snapshot, supervisor nao reiniciado): Antigravity running na 8794, passthrough, 2 chamadas, input 23.643, output 181, reasoning 169; custo null com missing de preco. Nao medido: custo real, functionCall, thoughtSignature em varios turnos, IDE e App, card apos jev-memory restart."
+    },
+    {
       "id": "H1-headroom-claude",
       "status": "passed",
       "command": "npm run build; npm run typecheck; npm run lint; npm test; npm run test:headroom; npm run test:e2e; npm run test:projects; throwaway-profile supervisor check",
@@ -880,6 +901,50 @@
       "command": "npm run build; npm run typecheck; npm run lint; npm test; npm run test:headroom; npm run test:headroom-codex; npm run test:claude-launch; npm run test:codex-launch",
       "evidence": ".local/evidence/codex-launch-e2e.json; .local/evidence/headroom-e2e.json; .local/evidence/headroom-codex-e2e.json",
       "observed": "Sem requisições pagas. npm test 448/448; test:headroom 7/7 (tool result 27.817→11.247 bytes); test:headroom-codex 11/11 (27.883→11.430); test:claude-launch 7/7; test:codex-launch 12/12. MCP de memória em code mode: exec listou 24/24 ferramentas mcp__jev_memory_suite__ e leu o handoff via memory_handoff_list, com e sem Headroom. Hooks com confiança nativa em CODEX_HOME isolado (clients install codex; hooks/list + config/batchWrite com currentHash): 7 listados, 7 untrusted→7 trusted; observações session-start, user-prompt, pre-tool-use, post-tool-use, stop, session-end iguais com e sem Headroom; sem --dangerously-bypass-hook-trust; hash do ~/.codex/config.toml real inalterado. Correção: HEADROOM_LOSSLESS_ONLY=1 no ambiente do Headroom (sem ela, com --no-ccr, SmartCrusher descartava itens de array sem marcador: 16/24 nomes no e2e, 11/24 offline); --lossless rejeitado (sem compressão). Pendente: handoff não aparece na primeira requisição do Codex com e sem Headroom (entrega pelo SessionStart não comprovada)."
+    },
+    {
+      "id": "M-agy-5",
+      "scope": "Antigravity (Marco 3): recuperação de sessões (SIGHUP, owner, --recover e --legacy), feed por agente, preços Gemini com validUntil e aliases, base de cobrança e multi-turno com thoughtSignature (offline)",
+      "status": "partial",
+      "command": "test/agy-recovery-e2e.ts (janela de console real, taskkill sem /F e taskkill /F, agy e finalize falsos, perfil temporário); jev-memory agy-finalize --recover e --recover --legacy no registro legado real; test/codeassist-multiturn.test.ts (32 testes, fixtures, sem rede); calculo de custo com os defaults e com a data de 2027-01-01",
+      "observed": "Recuperação: e2e real 2/2 (fechar a janela com taskkill sem /F finaliza pelo SIGHUP; taskkill /F seguido de recuperação recupera). Registro legado 3b7157ea2c6c293eebf5f1658cbc460f, sem owner: --recover retornou skipped no-owner; --recover --legacy retornou recovered 1f2d74bf-605d-483a-935d-9fa209141312, com ended_at 2026-10-24T16:16:22Z e 30 observacoes; diretorio de lancamentos vazio; supervisor nao reiniciado (mesmo PID). Multi-turno: 32 testes offline; passthrough byte a byte; none e forced nao validados ao vivo; direct e shadow inseguros (ADR 0015, Marco 3). Feed: rotulo por agent_kind (Claude, Codex, Antigravity, Desconhecido). Precos: flash-lite 2,83 USD e gemini-3.8-flash 3,45 USD com os defaults; com a data de 2027-01-01 o gemini-3.8-flash fica expired. Nao validado: none e forced ao vivo; painel com rotulos e precos novos (exige jev-memory restart, nao executado); IDE e App."
+    },
+    {
+      "id": "M-iso-1",
+      "scope": "Isolamento de testes: home temporario por arquivo no Jev (patch) e wrapper da suite com sentinelas do home real",
+      "status": "passed",
+      "command": "npm test (via scripts/test-isolated.mjs, com --real-uv-tools); npm run test:e2e; npm run test:projects; teste negativo com .jev-gateway falso; Jev com vitest.config.ts e test/isolate-home.setup.ts",
+      "observed": "npm test 560/560, sem skips, com 50.217 entradas sentinela do home real inalteradas. test:e2e 4/4 e test:projects 1/1 pelo wrapper. Teste negativo: falhou com changed .jev-gateway/codex.pid. Jev com o patch: 478 testes, 476 passam; 2 falhas pre-existentes do upstream no Windows (opencode-coverage x1, setup x1, modo 0600). Auditoria: no Jev so test/setup.test.ts vazava; na suite, e2e.ts, headroom-e2e.ts, headroom-codex-e2e.ts (USERPROFILE real por baseEnv) e projects-e2e.ts (process.env real) podiam tocar o home real. Sem --real-uv-tools, 3 testes reais do shim do Headroom pulavam."
+    },
+    {
+      "id": "M-agy-6",
+      "scope": "Antigravity (finalizacao da estabilizacao): recuperacao de sessoes (childPid, claim por rename com passadas, retry no Windows), feed (breadcrumb limpo apos finalizacao, corte de 12 h, toasts acumulativos) e custo Jev zero sem chamadas",
+      "status": "passed",
+      "command": "test/agy-recovery-e2e.ts (janela de console real); npm test; npm run test:e2e",
+      "observed": "Recuperacao: e2e de janela real 2/2. Owner com childPid: pid do wrapper ou do agy filho vivo torna o dono vivo; owner antigo sem childPid segue valido. Autofinalizacao por claim em ate 3 passadas, sem unlink incondicional; id gravado depois da ultima passada fica para a proxima recuperacao. Rename bloqueado (EBUSY, EPERM, EACCES): 5 novas tentativas de 100 ms, sem teste automatizado. Feed: clearActiveSession com compare-and-delete (nao atomico), corte de 12 h por mtime, seen de toasts acumulativo limitado a 2000 chaves, sem teste de navegador. Custo: sem chamadas Jev, custo Jev 0 e fora de missing; agy so repasse passa a mostrar total LLM. npm test 577/577 sem skips."
+    },
+    {
+      "id": "M-iso-2",
+      "scope": "Isolamento de testes: suite omitida por ambiente (test:codex-launch), correcao UV_TOOL_DIR no baseEnv e --real-uv-tools; investigacao da escrita em ~/.claude.json",
+      "status": "passed",
+      "command": "npm run test:codex-launch (12/12); comparacao de caminhos de chave entre ~/.claude/backups/.claude.json.backup.<epoch-ms> e ~/.claude.json",
+      "observed": "test:codex-launch pulava a suite inteira (0 testes, exit 0) pelo wrapper, sem ver o Python do Headroom; sem UV_TOOL_DIR no baseEnv (src/local.ts) falhava 2/12 com Headroom python not found, tambem em producao. Corrigido com --real-uv-tools no package.json e repasse de UV_TOOL_DIR; agora 12/12. ~/.claude.json: a unica chave alterada entre o ultimo backup e o arquivo atual, nas mudancas de 13:22:10 e 15:18:21, foi promptQueueUseCount; sem referencia as pastas temporarias dos testes; origem atribuida a sessao interativa do Claude Code."
+    },
+    {
+      "id": "M-agy-7",
+      "scope": "Antigravity (compatibilidade Code Assist): rotas v1internal do agy 1.4.7 (64 suportadas, 2 excluidas), contrato 2 (CODE_ASSIST_PATCH_VERSION 2), 405, 404 e 414 sem upstream, redirect manual, log saneado e patch regenerado (25 arquivos, 2.503 linhas)",
+      "status": "passed",
+      "command": "varredura das regras google.api.http nos descritores protobuf do agy.exe 1.4.7; npm test (Jev com o patch, incluindo test/codeassist-routes.test.ts); quatro arquivos Code Assist e health em separado; simulacao de applyGatewayPatches em copias LF e CRLF; git -c core.autocrlf=false apply --check em clone limpo do baseline; suite: typecheck, lint, build, npm test, test:e2e, test:projects, test:semantic, test:headroom, test:headroom-codex, test:claude-launch e test:codex-launch",
+      "observed": "Varredura: 66 regras google.api.http no agy 1.4.7 (55 POST, 11 GET). Rotas suportadas: 64 (2 de geracao pelo adaptador; 51 POST auxiliares; 5 GET colon; 5 GET exatas; 1 template de um segmento). Excluidas com 404: POST proxyCommand e streamProxyCommand com sufixo de caminho **. Jev com o patch: 574 testes, 572 passam; falhas pre-existentes do Windows opencode-coverage x1 e setup 0600 x1; codeassist-routes.test.ts com 96 testes novos; quatro arquivos Code Assist e health 186/186. Patch: 25 arquivos, 2.503 linhas, 0 CR; install simulado aplicou em LF e CRLF com CODE_ASSIST_PATCH_VERSION 2; git apply --check ok com core.autocrlf=false e falha com autocrlf ligado. Suite: typecheck, lint e build ok; npm test 588/588 sem skips, 50.217 sentinelas inalteradas; test:e2e 4/4; test:projects 1/1; test:semantic 1/1; test:headroom 7/7; test:headroom-codex 11/11; test:claude-launch 7/7; test:codex-launch 12/12. Trafego real no gateway 8794: 10 streamGenerateContent com 200 e 1 404 codeassist_unknown_method com nome vazio (17:51:38Z), compativel com GET /v1internal/buildWithGooglePlugins. Nada instalado nem reiniciado; gateway agy segue com codeAssist 1; sem chamada de modelo ou rede real. Nao observadas em trafego real: as demais rotas declaradas.",
+      "evidence": "progress.md, secao Antigravity: compatibilidade Code Assist (2026-10-24)"
+    },
+    {
+      "id": "M-agy-8",
+      "scope": "Antigravity (recuperacao, Windows): travas de arquivo na finalizacao e na recuperacao (EBUSY, EPERM, EACCES, EINVAL) com fsOps injetado; 6 tentativas (1 + 5) e 5 esperas",
+      "status": "passed",
+      "command": "npm test (testes de trava com injecao fsOps em finalizeAgyLaunch e AgyRecoveryDeps, sem mudanca de producao); test/agy-recovery-e2e.ts (janela de console real, 2/2)",
+      "observed": "EBUSY duas vezes e depois sucesso; EBUSY sempre, mantendo arquivos e owner, com recuperacao posterior; EPERM e EACCES como EBUSY; EINVAL sem retry e sem lancar; EBUSY na recuperacao dando claimed-by-other e recuperacao posterior; exatamente 6 tentativas (1 + 5) e 5 esperas. npm test 588/588 sem skips. E2E de recuperacao 2/2. Os erros sao simulados por fsOps; trava real de processo no Windows nao foi reproduzida. Fecha o risco caminho EBUSY sem teste registrado na finalizacao.",
+      "evidence": "progress.md, secao Antigravity: compatibilidade Code Assist (2026-10-24)"
     }
   ],
   "milestones": {

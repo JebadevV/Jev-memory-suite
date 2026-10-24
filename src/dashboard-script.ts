@@ -11,6 +11,7 @@ export const dashboardJs = `(function () {
   var FEED_POLL_MS = 3000;
   var TOAST_TTL_MS = 6000;
   var TOAST_MAX = 4;
+  var SEEN_MAX = 2000;
   var EXCERPT_MAX = 160;
   var KIND_LABELS = { session: 'sessão', decision: 'decisão', gotcha: 'armadilha', procedure: 'procedimento', rule: 'regra' };
   var FEED_LABELS = { 'post-tool-use': 'Ferramenta concluída', 'user-prompt': 'Prompt enviado', 'session-start': 'Sessão iniciada', 'session-end': 'Sessão encerrada', 'stop': 'Turno encerrado' };
@@ -254,7 +255,7 @@ export const dashboardJs = `(function () {
     toast.type = 'button';
     toast.className = 'toast';
     var project = document.createElement('span'); project.className = 'toast-project';
-    project.textContent = dash(item.projectLabel);
+    project.textContent = dash(item.agentLabel) + ' · ' + dash(item.projectLabel);
     var label = document.createElement('span'); label.className = 'toast-label';
     label.textContent = kindLabel(item.kind);
     var title = document.createElement('span'); title.className = 'toast-title';
@@ -275,7 +276,10 @@ export const dashboardJs = `(function () {
     if (!data || data.ok !== true || !Array.isArray(data.items)) return;
     var items = data.items;
     var fresh = items.filter(function (item) { return !seen.has(feedKey(item)); }).reverse();
-    seen = new Set(items.map(feedKey));
+    // Accumulated, not replaced: an item that leaves the feed and comes back must not toast again. Re-adding moves a current key to the newest slot, so only old keys are evicted.
+    items.forEach(function (item) { seen.delete(feedKey(item)); seen.add(feedKey(item)); });
+    var oldest = seen.values();
+    while (seen.size > SEEN_MAX) seen.delete(oldest.next().value);
     // A project's first sighting with items is baseline, not news. An online project without items is primed now, so its first real event toasts.
     var baseline = {};
     items.forEach(function (item) { if (!primed.has(item.projectId)) baseline[item.projectId] = true; });

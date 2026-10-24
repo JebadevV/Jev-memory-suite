@@ -622,3 +622,189 @@ Proposito: corrigir as afirmações sobre o MCP no Codex, validar a captura por 
 - `HEADROOM_LOSSLESS_ONLY` cobre o SmartCrusher. Os outros compressores do Headroom (log, texto, código) não foram auditados quanto a perda.
 - A economia ao vivo foi medida antes de `HEADROOM_LOSSLESS_ONLY`: H3 (Claude) e H5 (Codex). Nos fixtures a redução não mudou, mas ainda falta medir ao vivo com aprovação, de novo para Claude e Codex.
 - Consolidação em commits (2026-10-24): não feita. As mudanças desde `05e77681` misturam vários marcos nos mesmos arquivos e linhas (`src/cli.ts`, `src/config.ts`, `src/launch.ts`, `src/supervisor.ts`, `progress.md`, `tests.json`). Separar por marco exigiria estados intermediários nunca testados.
+
+## Jev Gateway: Antigravity via Code Assist, Marco 1 (2026-10-24)
+
+Proposito: registrar o patch Code Assist do Jev Gateway para o Antigravity CLI (agy), a validação do tráfego do agy e a validação ao vivo com o gateway, e os limites do Marco 1. Publico: mantenedores. Data: 2026-10-24. Decisao: [ADR 0015](docs/architecture/adr/0015-jev-gateway-antigravity-code-assist.md).
+
+### A: implementação
+
+- Patch `patches/jev-gateway/0.5.1/codeassist-agy.patch` (LF, 833 linhas, 10 arquivos) e `patches/jev-gateway/README.md`. `upstream/` não é editado.
+- Jev com o patch: modo `agy` (`JEV_CLIENT=agy`) com `src/codeassist.ts` (allowlist de hosts e métodos), `src/adapters/codeassist.ts` (passthrough), `src/config.ts` (recusas e `routing=false`) e `src/app.ts` (só `/health`, `/dashboard` e `/v1internal:*`).
+- Cliente `agy` em `bin/clients.mjs` e `bin/jev-agy.mjs`: porta 8794 e `CLOUD_CODE_URL`. `package.json` ganha o bin; `src/dashboard.html` lista a porta 8794 no painel do próprio Jev.
+- Install da suíte (`src/install.ts`): aplica `patches/jev-gateway/<versão>/*.patch` depois da cópia e antes do `pnpm install`. O id da versão inclui o hash da tree e o nome e o sha256 dos patches. A aplicação usa `GIT_CEILING_DIRECTORIES` e `core.autocrlf=false`, com `--check`, aplicação e `--reverse --check`. O patch vira CRLF quando a cópia do upstream é CRLF.
+
+### B: validação (agy 1.4.7, Windows 10, 2026-10-24)
+
+- Proxy transparente: um ping real com a conta Google e cota normal. 18 chamadas `POST /v1internal:<método>`, todas com status 200; agy com código 0. Bearer repassado intacto. Confirmou o envelope de requisição e de resposta, `usageMetadata` e `thoughtSignature`. Duas gerações: `gemini-3.5-flash-lite` (119 tokens de prompt) e `gemini-3.8-flash-high` com 15 ferramentas (23.197 tokens de prompt). Detalhes em `M-agy-2`.
+- Testes do Jev: 438 (435 ok), antes 400 (397 ok). São 38 testes novos em `test/codeassist.test.ts`. As 3 falhas herdadas (`setup.test.ts` 2, `opencode-coverage.test.ts` 1) também existem no gateway sem o patch, e são do upstream no Windows.
+- Patch: aplica limpo em cópia LF e em cópia CRLF; typecheck e build ok.
+- Suíte: typecheck e lint ok; `npm test` 462/462, com 14 testes novos de install.
+- Ao vivo, com o patch: gateway numa porta efêmera, sem alterar os gateways ativos e sem `jev-memory install`. `agy -p ping` com `CLOUD_CODE_URL` saiu com 0. Duas `streamGenerateContent` passaram em passthrough, com status 200 e motivo `routing_disabled`; tokens 119/3 e 23.192/9 (prompt/saída); 15 ferramentas na segunda. Negativos 404: `POST /v1/messages`, `POST /v1beta/models/x:generateContent`, `POST /v1internal:deleteEverything` e `GET /v1internal:loadCodeAssist`. Log do gateway sem Bearer e sem o texto do prompt.
+- Configuração do agy (`settings.json`, `config/mcp_config.json`, `config/config.json`) com hash idêntico antes e depois.
+- Registro: `M-agy-2` (proxy transparente) e `M-agy-3` (patch e validação ao vivo) em `tests.json`.
+
+### C: limites e pendências
+
+- Pendências do Marco 2: `jev-memory-agy` ainda não injeta `CLOUD_CODE_URL`; o launcher `jev-agy` ainda pede a chave do Jev (`ensureKey`), mesmo sem chamar o Jev; os dashboards da suíte não mostram o gateway agy; `jev-memory install` não foi rodado, e o ponteiro do gateway ativo não mudou.
+- `thoughtsTokenCount` não é contado como raciocínio pelo `usage.ts` do Jev. O custo de saída fica subestimado.
+- Método Code Assist novo, fora dos 9 verificados (7 auxiliares e 2 de geração), recebe 404. Risco de o agy quebrar após atualização até a lista ser revalidada.
+- `CLOUD_CODE_URL` e o protocolo `v1internal` não são documentados pelo Google. O agy se atualiza sozinho (1.4.5 para 1.4.7 em 2026-10-24).
+- Formato de resposta com `functionCall` não observado: o ping não chamou ferramenta. Roteamento ativo, forced, direct e shadow ficam desligados até revisão de privacidade e nova validação com `thoughtSignature` em vários turnos.
+- O painel do Jev mostra os motivos `codeassist_*` crus, e o botão de roteamento não tem efeito no modo agy.
+- IDE e App do Antigravity não validados.
+- Riscos T47 a T51 registrados no [modelo de ameaças](docs/security/threat-model.md).
+
+## Jev Gateway: Antigravity via Code Assist, Marco 2 (2026-10-24)
+
+Proposito: registrar a integração do gateway agy ao launcher e ao dashboard, o rollback do gateway, a validação real e os limites que permanecem. Publico: mantenedores. Data: 2026-10-24. Decisao: [ADR 0015](docs/architecture/adr/0015-jev-gateway-antigravity-code-assist.md), itens 9 a 14 e seção "Marco 2 (2026-10-24)".
+
+### A: implementação
+
+- Patch v2 cumulativo `patches/jev-gateway/0.5.1/codeassist-agy.patch` (LF, 15 arquivos), que acrescenta ao v1 os itens abaixo. `upstream/` não é editado.
+- Tokens (`usage.ts`): no Gemini, `output = candidatesTokenCount + thoughtsTokenCount` e `reasoning = thoughtsTokenCount`. A suíte calcula custo só por `output`, e `reasoning` é subconjunto, como no OpenAI. A regra "último relatório vence" foi mantida, sem soma entre eventos SSE cumulativos. Vale também para `jev-gemini`.
+- Chave: spec `agy` com `passthroughOnly: true`; o launcher `jev-agy` não chama `ensureKey()` para esse cliente. O modo agy força `routing=false` e recusa shadow, então nunca chama o Jev. Os outros clientes continuam exigindo a chave.
+- Health: no modo agy, `/health` responde `client: "agy"` e `codeAssist: 1` (`CODE_ASSIST_PATCH_VERSION`).
+- Launcher `jev-memory-agy` (`agyGatewayRoute` em `src/launch.ts`, nunca lança). Ordem das checagens: `JMS_AGY_GATEWAY=off`; `CLOUD_CODE_URL` já definido (não é sobrescrito); `agy --version` em `VALIDATED_AGY_VERSIONS = ['1.4.7']`; gateway instalado com spec `agy`; porta `JEV_AGY_PORT` válida ou 8794; health (1,5 s) e, se não responder, `node <gatewayDir>/bin/jev-agy.mjs --start` com ambiente sem `UPSTREAM_API_KEY`, `ROUTER_API_KEY`, `JEV_SHADOW`, `JEV_DEBUG_DUMP_DIR`, `CLOUD_CODE_URL` e `JEV_MEMORY_AGY_LAUNCH`. O health é validado com zod e exige `pid` igual a `~/.jev-gateway/agy.pid`. Sucesso: `CLOUD_CODE_URL=http://127.0.0.1:<porta>` só no ambiente do agy, e stderr `Jev gateway: http://127.0.0.1:8794 (passthrough)`. Falha: `Jev not used: <motivo>` e agy direto no Google. Código de saída do agy inalterado; hooks, MCP e finalização inalterados. O gateway é persistente.
+- Install e rollback (`src/install.ts`, `src/cli.ts`): `install gateway` imprime `{previous, current}`; `gateway-versions` lista as versões completas (mais nova primeiro, `current` marcada); `gateway-rollback <id>` valida o id (40 hexadecimais), exige versão completa dentro de `.local/engines/jev-gateway/`, troca o ponteiro com escrita atômica e não apaga nada.
+- Dashboard: cliente `agy` no histórico (`~/.jev-gateway/agy.log`), nas sondas e em `/gateways/status`. Card `obs-agy` "Antigravity", com nota de passthrough e sem o bloco "Com Jev × Baseline". O combinado "Combinado (Claude + Codex + Antigravity)" soma eventos, tokens, custo e modelos dos três; a comparação com e sem Jev continua só Claude + Codex, porque os eventos do agy são todos `routing_disabled`. Sem spec agy instalado, o card fica "Indisponível" sem sondar a porta. `status` e `doctor` passam a listar o agy.
+- Documentação: [clientes](docs/guides/clients.md), [operação](docs/runbooks/operations.md), [CLI](docs/api/cli.md), [modelo de ameaças](docs/security/threat-model.md) (T52 e T53).
+
+### B: validação (agy 1.4.7, Windows 10, 2026-10-24)
+
+- Testes: typecheck, lint e `npm test` 513/513 na suíte; build ok.
+- Jev com o patch v2: 446 testes, 444 passam. As 2 falhas são pré-existentes do upstream no Windows (`opencode-coverage` ×1, `setup` ×1, modo 0600 vira 0666). O vitest foi rodado com home temporário.
+- Patch v2 aplica limpo em cópia LF e em cópia CRLF.
+- Install real: `jev-memory install gateway` → `{previous: 0d15e05e48151c3423a50558ede7e101d6c83ae8, current: 4e03786dda52c2aecf9012181612da717015fe62}` em cerca de 4 s. A versão nova contém `src/codeassist.ts`, `dist/codeassist.js` e `bin/jev-agy.mjs`; a versão antiga ficou intacta.
+- Rollback: ida e volta (`gateway-rollback 0d15…`, depois `4e03…`) ok. Id inválido e versão inexistente recusados com exit 1.
+- Gateway Claude (PID 24728, porta 8789) não foi reiniciado em nenhum momento; continua na versão 0d15… até o próximo start.
+- Launcher real: `jev-memory-agy -p ping` (uma requisição na cota normal) → exit 0 e `Jev gateway: http://127.0.0.1:8794 (passthrough)`. `/health` `{status ok, client agy, codeAssist 1, upstream daily-cloudcode-pa}` com `pid` igual ao de `agy.pid`. `agy.log`: 2 `streamGenerateContent` passthrough 200, `routing_disabled`: `gemini-3.5-flash-lite` input 119 / output 3; `gemini-3.8-flash-high` com 15 ferramentas, input 23.524 / output 178 / reasoning 169. Sem Bearer nem prompt no log.
+- Sessão de memória `8dbcc308-ec74-4d69-8dba-419da8e5fbf0` com `agent_kind antigravity-cli`: session-start, stop e session-end (finalizada pelo launcher). Nenhum erro de hook.
+- Fallbacks reais (com `--version`, sem modelo): `JMS_AGY_GATEWAY=off` → `Jev not used: disabled by JMS_AGY_GATEWAY=off`; `JEV_AGY_PORT=8789` → `Jev not used: gateway health invalid: client, codeAssist, upstream`; `CLOUD_CODE_URL` definido → `Jev not used: CLOUD_CODE_URL already set`; gateway agy parado (`jev-agy --stop`) → relançar sobe sozinho e volta `Jev gateway: …`.
+- Dashboard (snapshot do dist novo com os logs reais; supervisor em execução não reiniciado): Antigravity `running` na 8794, `experiment passthrough`, 2 chamadas, input 23.643, output 181, reasoning 169. Custo `null`, com `missing` de preço para os dois modelos Gemini. Nenhum preço foi inventado.
+
+### C: limites, pendências e incidente
+
+- O card do Antigravity só aparece no painel em uso depois de `jev-memory restart`, que reinicia memória e dashboard, mas não os gateways Claude e Codex.
+- Claude e Codex passam à versão 4e03… no próximo start do gateway deles. O patch não muda o comportamento deles, e os testes do Jev não mostram regressão.
+- Se o gateway agy cair no meio de uma sessão, as requisições do agy falham até ele voltar. Não há fallback depois que o agy iniciou.
+- Versão nova do agy cai no caminho direto até revalidação (`VALIDATED_AGY_VERSIONS`).
+- Roteamento ativo, forced, direct e shadow continuam desligados. Formato de `functionCall` ainda não observado.
+- Modelos Gemini sem preço configurado em `observability.pricing`: custo fica `null`.
+- Arquivo de rastreio `launch/agy/3b7157ea2c6c293eebf5f1658cbc460f.sessions` da sessão de teste da manhã (janela fechada no X) continua pendente. A finalização no fechamento da janela não foi tratada neste marco.
+- Não medido: custo real (sem preço configurado), `functionCall`, `thoughtSignature` em vários turnos, IDE e App do Antigravity, e a resposta do dashboard com o supervisor reiniciado.
+- Incidente (T53): na Tarefa A do Marco 1, o `setup.test.ts` do Jev deixou um gateway Codex de teste (PID 9804, porta 8999, código da cópia de trabalho) e sobrescreveu `~/.jev-gateway/codex.pid`. O processo foi encerrado e o `codex.pid` removido. O gateway Codex real (8790) não estava rodando. Não dá para afirmar pelo log se o teste o derrubou. Mitigação: vitest com home temporário (T53). O defeito do teste upstream continua.
+
+## Antigravity: estabilização, Marco 3 (2026-10-24)
+
+Proposito: registrar a recuperação de sessões do agy (fechamento da janela, dono do lançamento e recuperação automática e manual), o feed por agente, os preços Gemini com validade e base de cobrança, o veredito do roteamento ativo e o isolamento dos testes. Publico: mantenedores. Data: 2026-10-24. Decisoes: [ADR 0011](docs/architecture/adr/0011-native-dashboard-and-token-observability.md) (acréscimo), [ADR 0012](docs/architecture/adr/0012-antigravity-cli-integration.md) (finalização), [ADR 0015](docs/architecture/adr/0015-jev-gateway-antigravity-code-assist.md) (Marco 3) e [ADR 0016](docs/architecture/adr/0016-test-isolation.md).
+
+### A: mudanças
+
+- **Recuperação de sessões do agy (`src/launch.ts`, `src/cli.ts`).** Cada `agyLaunch` grava `<launchId>.owner.json` (`pid`, `startedAt`, `workspace`, `project`, `cwd`; sem conteúdo) ao lado de `<launchId>.sessions`; os dois são removidos ao finalizar. Fechar a janela envia `SIGHUP`, que finaliza o próprio lançamento uma única vez, com prazo total de cerca de 7 s. A recuperação automática, antes de cada lançamento, toca só lançamentos cujo dono tem pid morto, com claim por rename e escopo gravado. Manual: `jev-memory agy-finalize --recover` (inclui escopo divergente, marcado `scope: "recorded"`) e `--recover --legacy` (também registros sem owner, com o config atual do perfil). Nunca lê outro perfil.
+- **Feed por agente (`src/hook.ts`, `src/dashboard.ts`, `src/dashboard-script.ts`).** O hook grava `active-session.<agente>` além do `active-session` legado. O feed lê as sessões por agente, rotula cada item como Claude, Codex, Antigravity ou Desconhecido, a partir de `agent_kind`, e une por data.
+- **Preços e base de cobrança (`src/config.ts`, `src/gateway-metrics.ts`, `src/gateways.ts`, dashboard).** Defaults verificados para `gemini-3.5-flash-lite` e `gemini-3.8-flash` (fonte e `verifiedAt` 2026-10-24). `validUntil` no `gemini-3.8-flash` (2026-12-31), com `llm-price-expired:<modelo>` depois. `observability.pricing.aliases` (padrão vazio) para equivalências assumidas. `observability.billing` por cliente (padrões `unknown`, `unknown` e `subscription` para agy). Preço do usuário se mescla aos defaults.
+- **Multi-turno (fixtures isoladas, sem rede).** 4 fixtures e 32 testes em `test/codeassist-multiturn.test.ts`, com as regras de assinatura de pensamento. Veredito em [ADR 0015, Marco 3](docs/architecture/adr/0015-jev-gateway-antigravity-code-assist.md#marco-3-2026-10-24): passthrough seguro; none e forced desconhecidos; direct e shadow inseguros. Roteamento ativo: NO-GO.
+- **Isolamento de testes.** Jev (patch): `vitest.config.ts` e `test/isolate-home.setup.ts`, com home temporário por arquivo; `setup.test.ts` corrigido. Suíte: `scripts/test-isolated.mjs`, com home temporário, preflight e comparação de sentinelas; `--real-uv-tools` para o shim do Headroom. Auditoria: no Jev só `setup.test.ts` vazava; na suíte, `e2e.ts`, `headroom-e2e.ts`, `headroom-codex-e2e.ts` e `projects-e2e.ts` podiam tocar o home real.
+- **Documentação.** ADR 0011 (acréscimo), ADR 0012 (finalização e consequências), ADR 0015 (Marco 3 e Estado), ADR 0016 (novo), modelo de ameaças (T53 corrigido; T54 e T55 novos), operação, clientes, CLI, configuração e schema, README do patch e `tests.json` (`M-agy-5` e `M-iso-1`).
+
+### B: validação (2026-10-24)
+
+- Suíte: typecheck, lint e build ok. `npm test` 560/560, sem skips, com 50.217 entradas sentinela do home real inalteradas. `test:e2e` 4/4 e `test:projects` 1/1, pelo wrapper. E2E de recuperação 2/2, com janela de console real: fechar com `taskkill` sem `/F` finaliza pelo SIGHUP; `taskkill /F` seguido de recuperação recupera.
+- Jev com o patch: 478 testes, 476 passam. As 2 falhas são pré-existentes do Windows (`opencode-coverage` ×1, `setup` ×1, modo 0600 lido como 0666).
+- Recuperação real: o registro legado `3b7157ea2c6c293eebf5f1658cbc460f`, da janela fechada de manhã, não tinha dono. `--recover` retornou `skipped: no-owner`. `--recover --legacy` retornou `recovered: [1f2d74bf-605d-483a-935d-9fa209141312]`. A sessão ficou com `ended_at` 2026-10-24T16:16:22Z e 30 observações. O diretório de lançamentos ficou vazio. O supervisor não foi reiniciado (mesmo PID).
+- Custo com os defaults: `gemini-3.5-flash-lite` com 2 M de entrada (1 M delas lidas do cache) e 1 M de saída = 2,83 USD. `gemini-3.8-flash` com 3 M de entrada (1 M do cache) e 0,5 M de saída = 3,45 USD. Com a data de 2027-01-01, o `gemini-3.8-flash` fica `expired`. Esses valores batem com a convenção de que a entrada inclui o cache.
+- Gateways: Claude (8789, PID 24728) e agy (8794, PID 24060) não reiniciados. `dist` reconstruído. O gateway instalado continua em `4e03786dda52c2aecf9012181612da717015fe62`; o patch atual difere dele só em testes, fixtures e config do vitest, e o runtime é igual. O próximo `jev-memory install gateway` gera uma versão nova.
+
+### C: limites e pendências
+
+- Validação ao vivo de none e forced: exige aprovação de chamadas de modelo e revisão de privacidade.
+- `test:claude-launch`, `test:codex-launch`, `test:headroom*` e `test:semantic` não foram rodados neste marco.
+- Janela estreita: um id gravado durante a finalização por SIGHUP pode se perder. A próxima recuperação só o cobre se o arquivo permanecer.
+- O painel em uso só mostra rótulos e preços novos depois de `jev-memory restart`, que não foi executado.
+- `~/.claude.json` teve o mtime alterado durante uma rodada. Origem provável: a própria sessão do Claude Code; não comprovada.
+- Perfis antigos de teste em `.local/profiles` não foram removidos.
+- IDE e App do Antigravity não verificados.
+- Não medido: custo real (há preço verificado só para dois modelos, e o resultado é estimativa de preço de API), `functionCall`, `thoughtSignature` em vários turnos ao vivo e o painel com os rótulos novos em uso.
+
+## Antigravity: finalização da estabilização (2026-10-24)
+
+Propósito: registrar o fechamento das pendências do Marco 3 do Antigravity: recuperação de sessões com `childPid`, autofinalização por claim, limpeza do feed, custo Jev zero sem chamadas, contabilidade Gemini verificada no gateway real, garantias do repasse e as suítes que estavam sendo omitidas. Público: mantenedores. Data: 2026-10-24. Decisões: [ADR 0011](docs/architecture/adr/0011-native-dashboard-and-token-observability.md) (acréscimo), [ADR 0012](docs/architecture/adr/0012-antigravity-cli-integration.md) (finalização e recuperação), [ADR 0015](docs/architecture/adr/0015-jev-gateway-antigravity-code-assist.md) (finalização da estabilização) e [ADR 0016](docs/architecture/adr/0016-test-isolation.md) (acréscimo).
+
+### A: mudanças
+
+- **Recuperação de sessões (`src/launch.ts`).** O owner `<launchId>.owner.json` ganha `childPid` opcional, gravado depois do spawn do agy. O dono é considerado vivo se o pid do wrapper ou o `childPid` estiver vivo. Motivo: `taskkill /F` no wrapper deixa o `agy.exe` filho rodando e gravando ids; antes, a recuperação finalizaria a sessão de um agy ainda ativo. Owner antigo sem `childPid` continua válido.
+- **Autofinalização por claim.** A saída normal e o SIGHUP usam claim por rename (`<launch>.sessions` para `<launch>.sessions.recovering-<pid>`) em até 3 passadas. Um id anexado por hook durante a finalização vai para um novo `.sessions` e é pego na passada seguinte. Se chegar depois da última passada, fica registrado com o owner para a próxima recuperação. O `unlink` incondicional que podia perder ids foi removido. Isso fecha a janela estreita de SIGHUP registrada no Marco 3.
+- **Rename bloqueado no Windows.** Para EBUSY, EPERM e EACCES (arquivo aberto por um hook), há 5 novas tentativas de 100 ms. Se persistir, o owner fica e a recuperação termina depois.
+- **Isolamento de projeto inalterado.** Só o diretório do próprio perfil, escopo gravado, escopo divergente só no comando manual. O risco de pid reaproveitado continua no lado seguro (vira skip). O claim usa o launchId aleatório, então não colide com lançamento anterior.
+- **Sessões antigas no feed (`src/hook.ts`, `src/dashboard.ts`, `src/dashboard-script.ts`), sem mudança de layout.** Novo `clearActiveSession`, compare-and-delete de `active-session.<agente>` e `active-session`. Ele é chamado no `session-end` de Claude e Codex (num `finally`) e depois de cada finalização bem-sucedida do agy, que não tem session-end. `readActiveSessions` ignora breadcrumbs sem atividade há mais de 12 h (`ACTIVE_SESSION_STALE_MS`, pelo mtime). No navegador, `seen` dos toasts ficou acumulativo, limitado a 2000 chaves.
+- **Custo Jev zero sem chamadas (`src/gateway-metrics.ts`, `src/gateways.ts`).** Sem chamadas Jev (`calls` 0 e `inputTokens` 0), o custo Jev é 0, e nem `jev-price` nem `jev-output-tokens` entram em `missing`. O total passa a ser o custo LLM. Antes, o gateway agy (só repasse) mostrava `total: null` mesmo para `gemini-3.5-flash-lite` com preço. Vale também para o agregado. Com chamadas Jev, nada muda.
+- **Correção de ambiente nas suítes.** `package.json`: `test:codex-launch` ganha `--real-uv-tools`. `baseEnv()` (`src/local.ts`) passa a repassar `UV_TOOL_DIR`. A correção vale também em produção, porque antes o supervisor ignorava um `UV_TOOL_DIR` personalizado do usuário. Detalhes no [ADR 0016](docs/architecture/adr/0016-test-isolation.md).
+
+### B: validação (2026-10-24)
+
+- Testes: `npm test` 577/577, sem skips, com 50.217 sentinelas do home real inalteradas. `test:e2e` 4/4, `test:projects` 1/1, `test:semantic` 1/1, `test:headroom` 7/7, `test:headroom-codex` 11/11, `test:claude-launch` 7/7 e `test:codex-launch` 12/12. E2E de recuperação com janela real 2/2. Typecheck, lint e build ok.
+- Regressão encontrada e corrigida: `test:codex-launch` pulava a suíte inteira (0 testes, exit 0), porque o wrapper não via o Python do Headroom. Sem `UV_TOOL_DIR` e `--real-uv-tools`, falhava 2/12 ("Headroom python not found"). Agora passa 12/12.
+- `~/.claude.json`: o Claude Code grava backups rotativos em `~/.claude/backups/.claude.json.backup.<epoch-ms>` antes de cada escrita. Comparando só os caminhos de chave entre o último backup e o arquivo atual, nas duas mudanças (13:22:10 e 15:18:21), a única chave alterada foi `promptQueueUseCount`. O arquivo não tem referência às pastas temporárias dos testes. A escrita é da sessão interativa do Claude Code.
+- Contabilidade Gemini no gateway real 8794 (somente leitura de `~/.jev-gateway/agy.log` e de `/gateways/status`): 10 gerações. As somas brutas do log batem com o painel: input 209.341 (63.563 sem cache e 145.778 do cache); output 1.502, que inclui 1.012 de reasoning, sem contagem dupla. `gemini-3.8-flash-high` (8 eventos) segue sem preço (`llm-price:gemini-3.8-flash-high`). `gemini-3.5-flash-lite` (2 eventos) tem estimativa de 0,0001 USD. Billing: agy `subscription`; Claude e Codex `unknown`.
+- Repasse, revisão do patch e log real: `codeAssistAdapter.toInput` sempre devolve `{skip: "codeassist_passthrough_only"}`, e `decideFor` sai antes de `decide` e `askJev`. `config.shadow` é recusado em agy, e `/router/decide` não é registrado no modo agy. Log real: 10/10 gerações `passthrough / routing_disabled`, nenhuma linha com `jev` ou `shadow`, `jev.calls` 0. O `agy.log` (5.937 bytes) não tem `Bearer`, `ya29.`, `authorization`, `contents`, `systemInstruction` nem `thoughtSignature`.
+- Achado de disponibilidade: o binário do agy 1.4.7 referencia cerca de 60 métodos `v1internal:*` e o caminho `/v1internal/buildWithGooglePlugins`, com barra. A allowlist tem 9. Ver ADR 0015, seção F.
+
+### C: limites e pendências
+
+Pendências do Marco 3 fechadas:
+
+- Janela de SIGHUP: fechada pelo claim com passadas e pela remoção do `unlink` incondicional. Um id que chegue depois da última passada fica para a próxima recuperação.
+- Testes omitidos: `test:claude-launch`, `test:codex-launch`, `test:headroom*` e `test:semantic` foram rodados neste marco, com a correção de `UV_TOOL_DIR` e `--real-uv-tools`.
+- `~/.claude.json`: fechada, com origem atribuída à sessão interativa do Claude Code.
+- Feed antigo: fechado pelo corte de 12 h e pelo `clearActiveSession`. O compare-and-delete não é atômico (ver limites abaixo).
+
+Pendências que continuam:
+
+- Validação ao vivo de none e forced: exige aprovação de chamadas de modelo e revisão de privacidade. Roteamento ativo segue NO-GO.
+- Painel com as mudanças de feed, rótulos e preços: só vale depois de `jev-memory restart`, que não foi executado. Gateways Claude (8789) e agy (8794) não foram reiniciados.
+- Perfis antigos de teste em `.local/profiles` não foram removidos.
+- IDE e App do Antigravity não verificados.
+- Não medido: custo real, `functionCall` e `thoughtSignature` em vários turnos ao vivo.
+- Allowlist de métodos (ADR 0015, F): 9 métodos contra cerca de 60 no binário. A recomendação não foi implementada e exige novo patch, reinstalação e aprovação. Até lá, `JMS_AGY_GATEWAY=off` contorna. **Fechado em 2026-10-24**, ver [compatibilidade Code Assist](#antigravity-compatibilidade-code-assist-2026-10-24).
+- Riscos residuais: compare-and-delete não atômico (uma gravação de outro cliente no mesmo intervalo some do feed até o próximo hook); caminho EBUSY sem teste automatizado; session-end via `captureNative` coberto só pela função `clearActiveSession`, não de ponta a ponta; dedupe de toasts sem teste de navegador.
+
+## Antigravity: compatibilidade Code Assist (2026-10-24)
+
+Propósito: registrar a compatibilidade das rotas Code Assist do agy 1.4.7 com o gateway (contrato 2), os redirects e limites de URL, as travas de arquivo do Windows na recuperação e o estado da instalação. Público: mantenedores. Data: 2026-10-24. Decisões: [ADR 0015](docs/architecture/adr/0015-jev-gateway-antigravity-code-assist.md#compatibilidade-code-assist-2026-10-24) (compatibilidade Code Assist), [ADR 0012](docs/architecture/adr/0012-antigravity-cli-integration.md) (travas de arquivo) e [modelo de ameaças](docs/security/threat-model.md) (T50 e T57).
+
+### A: mudanças
+
+- Patch `patches/jev-gateway/0.5.1/codeassist-agy.patch` regenerado com o contrato 2 (`CODE_ASSIST_PATCH_VERSION` = 2). São 25 arquivos (antes 23; entraram `src/upstream.ts` e `test/codeassist-routes.test.ts`), 2.503 linhas, 0 CR.
+- Tabela de 64 rotas, com casamento por igualdade no pathname cru e verbo conferido. Duas são de geração (adaptador) e as demais são auxiliares com repasse. Os templates `proxyCommand` e `streamProxyCommand` com `**` ficam fora e respondem 404.
+- Respostas sem upstream: 405 com `Allow` para verbo errado em rota conhecida, `HEAD` ou `OPTIONS`; 404 para rota desconhecida; 414 para query acima de 4096 caracteres. Nenhuma dessas linhas tem `mode`, então não entra nas métricas.
+- Redirects: no modo agy, `fetch` usa `redirect: "manual"`. Qualquer 3xx do upstream vira 502 `upstream_redirect_refused`, sem `Location` nem corpo.
+- Log saneado: nome do método ou primeiro segmento após `/v1internal/` (só `[A-Za-z0-9_]`, até 64 caracteres). Nunca o resto do caminho nem a query.
+- Suíte (`src/launch.ts`): `AGY_CODE_ASSIST_VERSIONS = [1, 2]`. Aceita o gateway instalado (contrato 1) e o contrato 2; outros valores são recusados e o agy segue direto.
+- Travas de arquivo no Windows: `finalizeAgyLaunch` e `AgyRecoveryDeps` recebem injeção `fsOps` (`rename`, `sleep`), sem mudança de produção. Testes novos: EBUSY duas vezes e depois sucesso; EBUSY sempre, mantendo arquivos e owner, com recuperação posterior; EPERM e EACCES como EBUSY; EINVAL sem retry e sem lançar; EBUSY na recuperação dando `claimed-by-other`, com recuperação posterior; exatamente 6 tentativas (1 + 5) e 5 esperas.
+
+### B: validação (2026-10-24)
+
+- Jev com o patch: 574 testes, 572 passam. As 2 falhas pré-existentes do Windows continuam (`opencode-coverage` ×1, `setup` 0600 ×1). `test/codeassist-routes.test.ts` tem 96 testes novos. Os quatro arquivos de Code Assist e health somam 186/186, conferidos em separado.
+- Suíte: typecheck, lint e build ok. `npm test` 588/588, sem skips, com 50.217 sentinelas inalteradas. `test:e2e` 4/4, `test:projects` 1/1, `test:semantic` 1/1, `test:headroom` 7/7, `test:headroom-codex` 11/11, `test:claude-launch` 7/7, `test:codex-launch` 12/12. E2E de recuperação 2/2.
+- Patch: a simulação do passo de install (`applyGatewayPatches`) em cópias LF e CRLF da fonte vendorizada aplicou nas duas, com `CODE_ASSIST_PATCH_VERSION` = 2.
+- Nota de verificação: `git apply --check` passou num clone limpo do baseline com `core.autocrlf=false`. Com `core.autocrlf` ligado no checkout, a verificação falha.
+- Varredura do binário: 66 regras `google.api.http` no agy 1.4.7 (55 POST e 11 GET), com cobertura de todos os métodos.
+- Tráfego real no gateway 8794: 10 `streamGenerateContent` com status 200, e 1 pedido 404 `codeassist_unknown_method` com nome vazio às 17:51:38Z. O pedido é compatível com `GET /v1internal/buildWithGooglePlugins`; o log antigo não registrava caminhos com barra.
+- Estado: nada instalado nem reiniciado. O gateway instalado continua `4e03786dda52c2aecf9012181612da717015fe62`; o anterior, `0d15e05e48151c3423a50558ede7e101d6c83ae8`, está preservado. O gateway agy em execução (8794, PID 24060) segue com `codeAssist: 1` e responde 404 a `buildWithGooglePlugins`. O gateway Claude (8789, PID 24728) não foi tocado. Nenhuma chamada de modelo ou de rede real.
+
+### C: limites e pendências
+
+Fechado nesta etapa:
+
+- Allowlist estreita (achado da seção de finalização, ADR 0015, F): a lista de 9 métodos foi substituída pela tabela de 64 rotas do contrato 2.
+- Caminho EBUSY sem teste (risco da finalização): coberto pelos testes de trava acima. Os erros são simulados por `fsOps`; o comportamento com trava real de processo no Windows não foi reproduzido.
+
+Pendências:
+
+- `jev-memory install gateway` e o reinício do gateway agy exigem aprovação. Até lá, o agy segue com `codeAssist: 1`, e `buildWithGooglePlugins` responde 404.
+- Validação ao vivo depois da instalação, só com chamadas não-modelo (por exemplo, abrir o agy e conferir zero linhas `codeassist_unknown_method`), exige aprovação. Das rotas declaradas, só a de geração e o 404 de `buildWithGooglePlugins` foram observados em tráfego real.
+- Uma atualização do agy pode declarar rotas novas. `VALIDATED_AGY_VERSIONS` continua `['1.4.7']`; rotas novas exigem repetir a varredura.
+- Os métodos de chat auxiliares (`generateChat`, `streamGenerateChat`, `tabChat`, `internalAtomicAgenticChat`, `completeCode`, `generateCode`, `transformCode`) não têm contagem de tokens no painel. Se o agy gerar por algum deles, esses tokens não aparecem.
+- Os templates `**` de `proxyCommand` e `streamProxyCommand` seguem bloqueados. Um recurso remoto do agy que os use não funciona pelo gateway; `JMS_AGY_GATEWAY=off` contorna.
+- Roteamento ativo segue NO-GO (ADR 0015, Marco 3).

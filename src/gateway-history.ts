@@ -9,7 +9,7 @@ import {
 } from './gateway-metrics.js';
 import { addCompareEvent, createCompareAccumulator, finishCompare, type Compare, type CompareAccumulator } from './gateway-views.js';
 
-export type HistoryClient = 'claude' | 'codex';
+export type HistoryClient = 'claude' | 'codex' | 'agy';
 export interface HistoryResult { metrics: RouteMetrics; byModel: ModelMetrics[]; compare: Compare; complete: boolean; bytesRead: number }
 export interface HistoryReader { refresh(): Promise<HistoryResult | null> }
 

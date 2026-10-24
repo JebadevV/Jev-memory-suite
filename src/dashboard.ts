@@ -1,11 +1,11 @@
 // Suite dashboard: AI Memory panel and the upstream gateway aggregator frame, served on loopback only.
 // Purpose: maintainers and operators. Date: 2026-10-22.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { z } from 'zod';
 import { profileDir, readConfig } from './config.js';
-import { ACTIVE_SESSION_FILE } from './hook.js';
+import { ACTIVE_SESSION_AGENTS, ACTIVE_SESSION_FILE, activeSessionFile, isActiveSessionAgent, type ActiveSessionAgent } from './hook.js';
 import { Mcp } from './mcp.js';
 import { listProjects, type ProjectEntry } from './dashboard-projects.js';
 import { dashboardHtml } from './dashboard-page.js';
@@ -67,21 +67,34 @@ export function summarize(briefing: unknown) {
 // memoryPort is added by startDashboard from the profile config, not from the briefing.
 export type MemorySummary = ReturnType<typeof summarize> & { memoryPort: number };
 
+// The session's own kind is read from the engine; an unrecognised or missing value is tolerated instead of failing the feed.
 const feedSchema = z.object({
+  session: z.object({ agent_kind: z.string().max(64).nullish().catch(undefined) }).nullish().catch(undefined),
   observations: z.array(z.object({
     id: z.string().min(1).max(200), kind: z.string().max(64), title: z.string().nullish(),
     body: z.string().nullish(), created_at: z.string().nullish(),
   })),
 });
-export interface FeedItem { id: string; kind: string; title: string; body: string; createdAt: string | null }
-export type MemoryFeed = { ok: true; sessionId: string | null; items: FeedItem[] };
+export type FeedAgent = ActiveSessionAgent | 'unknown';
+export const AGENT_LABELS: Record<FeedAgent, string> = { 'claude-code': 'Claude', codex: 'Codex', 'antigravity-cli': 'Antigravity', unknown: 'Desconhecido' };
+export interface FeedItem { id: string; kind: string; title: string; body: string; createdAt: string | null; agent: FeedAgent; agentLabel: string }
+export interface FeedSession { agent: FeedAgent; sessionId: string }
+export type MemoryFeed = { ok: true; sessionId: string | null; items: FeedItem[]; sessions: FeedSession[] };
 export interface ProjectFeedItem extends FeedItem { projectId: string; projectLabel: string }
 export interface ProjectStatus extends ProjectEntry { online: boolean }
 
+// The engine's session kind wins; the active-session file name is the fallback, and nothing at all means unknown.
+export function feedAgentOf(kind: unknown, fileAgent?: FeedAgent): FeedAgent {
+  return isActiveSessionAgent(kind) ? kind : fileAgent ?? 'unknown';
+}
+
 // Keeps only the observation fields the toasts show; bodies are bounded again here in case the engine ignores its limit.
-export function summarizeFeed(observations: unknown): FeedItem[] {
-  return feedSchema.parse(observations).observations.map(o => ({
+export function summarizeFeed(observations: unknown, fileAgent?: FeedAgent): FeedItem[] {
+  const parsed = feedSchema.parse(observations);
+  const agent = feedAgentOf(parsed.session?.agent_kind, fileAgent);
+  return parsed.observations.map(o => ({
     id: o.id, kind: clip(o.kind, MAX_KIND), title: clip(o.title ?? ''), body: clip(o.body ?? '', FEED_BODY_MAX_CHARS), createdAt: o.created_at ?? null,
+    agent, agentLabel: AGENT_LABELS[agent],
   }));
 }
 
@@ -90,6 +103,18 @@ const createdRank = (iso: string | null): number => {
   const time = iso ? Date.parse(iso) : NaN;
   return Number.isNaN(time) ? 0 : time;
 };
+const newestRank = (items: FeedItem[]): number => items.reduce((max, item) => Math.max(max, createdRank(item.createdAt)), 0);
+
+// Each distinct active session is read once; the items of all of them are merged newest first and capped at FEED_LIMIT.
+// `sessions` lists the active sessions, most recent first, and `sessionId` is the first of them.
+export async function buildFeed(candidates: FeedSession[], read: (sessionId: string) => Promise<unknown>): Promise<MemoryFeed> {
+  const unique = candidates.filter((candidate, index) => candidates.findIndex(other => other.sessionId === candidate.sessionId) === index);
+  const found = await Promise.all(unique.map(async candidate => ({ ...candidate, items: summarizeFeed(await read(candidate.sessionId), candidate.agent) })));
+  found.sort((a, b) => newestRank(b.items) - newestRank(a.items));
+  const items = found.flatMap(session => session.items).sort((a, b) => createdRank(b.createdAt) - createdRank(a.createdAt)).slice(0, FEED_LIMIT);
+  const sessions = found.map(({ agent, sessionId }) => ({ agent, sessionId }));
+  return { ok: true, sessionId: sessions[0]?.sessionId ?? null, items, sessions };
+}
 export function mergeProjectFeeds(feeds: { project: ProjectEntry; items: FeedItem[] }[]): ProjectFeedItem[] {
   return feeds
     .flatMap(({ project, items }) => items.map(item => ({ ...item, projectId: project.id, projectLabel: project.label })))
@@ -228,13 +253,30 @@ export function dashboardHandler(opts: DashboardOptions): (req: IncomingMessage,
   return (req, res) => { void route(req, res); };
 }
 
-// Missing file means no session yet; any other read error is a real failure and propagates.
-async function readActiveSession(name: string): Promise<string | null> {
-  try { return (await readFile(resolve(profileDir(name), ACTIVE_SESSION_FILE), 'utf8')).trim(); }
-  catch (e) {
+// A breadcrumb older than this is a session that ended without session-end (for example a crash), so it no longer shows in the feed.
+export const ACTIVE_SESSION_STALE_MS = 12 * 60 * 60 * 1000;
+// Missing file means no session yet; a stale file counts as missing. Any other read error is a real failure and propagates.
+async function readSessionFile(path: string, now: number): Promise<string | null> {
+  try {
+    const { mtimeMs } = await stat(path);
+    if (mtimeMs < now - ACTIVE_SESSION_STALE_MS) return null;
+    return (await readFile(path, 'utf8')).trim();
+  } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw e;
   }
+}
+const validSessionId = (raw: string | null): string | null => raw && SESSION_ID_PATTERN.test(raw) ? raw : null;
+
+// One candidate per agent whose active-session file holds a valid, non-stale id. Only when no agent has one is the legacy file used, with an unknown agent.
+export async function readActiveSessions(profilePath: string, now = Date.now()): Promise<FeedSession[]> {
+  const found = await Promise.all(ACTIVE_SESSION_AGENTS.map(async agent => ({
+    agent, sessionId: validSessionId(await readSessionFile(resolve(profilePath, activeSessionFile(agent)), now)),
+  })));
+  const perAgent = found.flatMap(({ agent, sessionId }) => sessionId ? [{ agent, sessionId }] : []);
+  if (perAgent.length > 0) return perAgent;
+  const legacy = validSessionId(await readSessionFile(resolve(profilePath, ACTIVE_SESSION_FILE), now));
+  return legacy ? [{ agent: 'unknown', sessionId: legacy }] : [];
 }
 
 interface ProjectState { mcp?: Mcp; summary?: { at: number; value: MemorySummary }; feed?: { at: number; value: MemoryFeed } }
@@ -269,16 +311,13 @@ export async function startDashboard(name: string): Promise<Server> {
     const id = projectId ?? name, state = stateOf(id);
     if (state.feed && Date.now() - state.feed.at < FEED_TTL_MS) return state.feed.value;
     try {
-      const raw = await readActiveSession(id);
-      const sessionId = raw && SESSION_ID_PATTERN.test(raw) ? raw : null;
-      let items: FeedItem[] = [];
-      if (sessionId) {
+      const candidates = await readActiveSessions(profileDir(id));
+      let value: MemoryFeed = { ok: true, sessionId: null, items: [], sessions: [] };
+      if (candidates.length > 0) {
         const { workspace, project } = await readConfig(id);
         const mcp = (state.mcp ??= await Mcp.connect(id));
-        const observations = await mcp.call('memory_read_session_observations', { workspace, project, session_id: sessionId, order: 'desc', limit: FEED_LIMIT, body_max_chars: FEED_BODY_MAX_CHARS });
-        items = summarizeFeed(observations);
+        value = await buildFeed(candidates, sessionId => mcp.call('memory_read_session_observations', { workspace, project, session_id: sessionId, order: 'desc', limit: FEED_LIMIT, body_max_chars: FEED_BODY_MAX_CHARS }));
       }
-      const value: MemoryFeed = { ok: true, sessionId, items };
       state.feed = { at: Date.now(), value };
       return value;
     } catch (e) {
@@ -286,11 +325,12 @@ export async function startDashboard(name: string): Promise<Server> {
       throw e;
     }
   };
-  const readers = { claude: createHistoryReader(historyFile('claude')), codex: createHistoryReader(historyFile('codex')) };
+  const readers = { claude: createHistoryReader(historyFile('claude')), codex: createHistoryReader(historyFile('codex')), agy: createHistoryReader(historyFile('agy')) };
   const gatewayOptions: GatewaySnapshotOptions = {
-    pricing: { models: observability.pricing.models, jev: observability.pricing.jev },
+    pricing: { models: observability.pricing.models, jev: observability.pricing.jev, aliases: observability.pricing.aliases },
+    billing: observability.billing,
     experiment: gatewayExperiment,
-    history: { claude: () => readers.claude.refresh(), codex: () => readers.codex.refresh() },
+    history: { claude: () => readers.claude.refresh(), codex: () => readers.codex.refresh(), agy: () => readers.agy.refresh() },
   };
   // The gateways are the ports the upstream launchers use, read from the supervisor environment on each check.
   const gateways = async (): Promise<GatewaySnapshot> => gatewaySnapshot(await upstreamGateways(), gatewayOptions);

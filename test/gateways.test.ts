@@ -4,14 +4,15 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { createServer as createNetServer, type AddressInfo } from 'node:net';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
   aggregatorFor, gatewayStatus, gatewaySnapshot, parsePort, probeGateway, upstreamGateways,
   type GatewayProbe, type UpstreamClient, type UpstreamGateway,
 } from '../src/gateways.js';
 import { summarizeByModel, summarizeRouteEvents, type JevPrice, type LlmPrice } from '../src/gateway-metrics.js';
 import { compareGroups } from '../src/gateway-views.js';
-import type { HistoryResult } from '../src/gateway-history.js';
+import { createHistoryReader, type HistoryResult } from '../src/gateway-history.js';
+import { configSchema, json, root } from '../src/config.js';
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => void;
 
@@ -49,9 +50,18 @@ async function specDir(t: { after: (fn: () => Promise<void>) => void }): Promise
   return dir;
 }
 
+// Installed-spec fixture with a valid agy spec, so agy is read from the install rather than the fallback.
+async function specDirWithAgy(t: { after: (fn: () => Promise<void>) => void }): Promise<string> {
+  const dir = await specDir(t);
+  await writeFile(join(dir, 'bin', 'clients.mjs'),
+    "export const codex = { portEnv: 'JEV_CODEX_PORT', defaultPort: 8791 };\nexport const claude = { portEnv: 'lower', defaultPort: 80 };\n"
+    + "export const agy = { portEnv: 'JEV_AGY_PORT', defaultPort: 8795 };\n");
+  return dir;
+}
+
 test('upstream gateways read the installed port specs and fall back per client when a spec is unusable', async t => {
   const dir = await specDir(t);
-  const [claude, codex] = await upstreamGateways({}, dir);
+  const [claude, codex, agy] = await upstreamGateways({}, dir);
   assert.equal(codex?.port, 8791);
   assert.equal(codex?.source, 'installed');
   assert.equal(codex?.origin, 'http://127.0.0.1:8791');
@@ -59,6 +69,21 @@ test('upstream gateways read the installed port specs and fall back per client w
   assert.equal(claude?.port, 8789);
   assert.equal(claude?.portEnv, 'JEV_CLAUDE_PORT');
   assert.equal(claude?.source, 'fallback');
+  assert.equal(agy?.client, 'agy');
+  assert.equal(agy?.label, 'Antigravity');
+  assert.equal(agy?.portEnv, 'JEV_AGY_PORT');
+  assert.equal(agy?.port, 8794);
+  assert.equal(agy?.source, 'fallback');
+});
+
+test('an installed agy spec sets its port, and JEV_AGY_PORT overrides it when usable', async t => {
+  const dir = await specDirWithAgy(t);
+  const [, , installed] = await upstreamGateways({}, dir);
+  assert.equal(installed?.port, 8795);
+  assert.equal(installed?.source, 'installed');
+  const [, , overridden] = await upstreamGateways({ JEV_AGY_PORT: '18794' }, dir);
+  assert.equal(overridden?.port, 18794);
+  assert.equal(overridden?.origin, 'http://127.0.0.1:18794');
 });
 
 test('a valid env override moves the gateway origin and dashboard to that port', async t => {
@@ -79,12 +104,14 @@ test('an unusable env override falls back to the spec default and is marked inva
   }
 });
 
-test('a missing upstream install falls back to the built-in ports for both clients', async t => {
+test('a missing upstream install falls back to the built-in ports for every client', async t => {
   const dir = await specDir(t);
-  const [claude, codex] = await upstreamGateways({}, join(dir, 'missing'));
+  const [claude, codex, agy] = await upstreamGateways({}, join(dir, 'missing'));
   assert.equal(claude?.port, 8789);
   assert.equal(codex?.port, 8790);
   assert.equal(codex?.source, 'fallback');
+  assert.equal(agy?.port, 8794);
+  assert.equal(agy?.source, 'fallback');
 });
 
 test('parsePort accepts only decimal digits within 1024-65535', () => {
@@ -158,8 +185,9 @@ test('probe refuses any origin that is not IPv4 loopback without connecting', as
 
 // Fixture gateway for the status tests. The port is the one the dashboard names; the origin is where the stub listens.
 function upstream(client: UpstreamClient, port: number, origin = `http://127.0.0.1:${port}`): UpstreamGateway {
+  const label: Record<UpstreamClient, string> = { claude: 'Claude', codex: 'Codex', agy: 'Antigravity' };
   return {
-    client, label: client === 'claude' ? 'Claude' : 'Codex', portEnv: `JEV_${client.toUpperCase()}_PORT`, port,
+    client, label: label[client], portEnv: `JEV_${client.toUpperCase()}_PORT`, port,
     source: 'installed', portValid: true, origin, dashboardUrl: `http://localhost:${port}/dashboard`,
   };
 }
@@ -253,7 +281,7 @@ test('gateway status keeps the router block only and has no event, window or ran
   try {
     const status = await gatewayStatus(upstream('codex', 0, stub.origin));
     assert.deepEqual(Object.keys(status).sort(), [
-      'client', 'cost', 'experiment', 'history', 'historyCompare', 'label', 'metrics', 'models', 'port', 'portValid', 'router', 'state',
+      'billing', 'client', 'cost', 'experiment', 'history', 'historyCompare', 'label', 'metrics', 'models', 'port', 'portValid', 'router', 'state',
     ]);
     assert.deepEqual(status.cost, { history: null });
     assert.deepEqual(status.models, { history: [] });
@@ -394,7 +422,7 @@ test('client history cost is unknown when a model that made calls has no price, 
     assert.equal(unpriced?.cost.llm, null);
     assert.equal(status.cost.history?.llm, null);
     assert.equal(status.cost.history?.total, null);
-    assert.deepEqual(status.cost.history?.missing, ['llm-price:model-b', 'jev-price', 'jev-output-tokens']);
+    assert.deepEqual(status.cost.history?.missing, ['llm-price:model-b']);
   } finally { await stub.close(); }
 });
 
@@ -409,7 +437,7 @@ test('client history cost sums the per-model estimates when every model that mad
     assert.equal(status.cost.history?.llm, 22);
     assert.equal(status.cost.history?.jev, 0);
     assert.equal(status.cost.history?.total, 22);
-    assert.deepEqual(status.cost.history?.missing, ['jev-output-tokens']);
+    assert.deepEqual(status.cost.history?.missing, []);
   } finally { await stub.close(); }
 });
 
@@ -465,7 +493,7 @@ test('gateway snapshot has no history cost without prices and sums the per-clien
     const unpriced = await gatewaySnapshot(gateways, { history });
     assert.equal(unpriced.gateways[0]?.cost.history?.llm, null);
     assert.equal(unpriced.gateways[0]?.cost.history?.total, null);
-    assert.deepEqual(unpriced.gateways[0]?.cost.history?.missing, ['llm-price:model-a', 'llm-price:model-b', 'jev-price', 'jev-output-tokens']);
+    assert.deepEqual(unpriced.gateways[0]?.cost.history?.missing, ['llm-price:model-a', 'llm-price:model-b']);
     assert.equal(unpriced.combined.cost.history.llm, null);
     assert.equal(unpriced.combined.cost.history.total, null);
     assert.deepEqual(unpriced.pricing, { models: {}, jev: null });
@@ -476,7 +504,7 @@ test('gateway snapshot has no history cost without prices and sums the per-clien
     assert.equal(priced.combined.cost.history.llm, 36);
     assert.equal(priced.combined.cost.history.jev, 0);
     assert.equal(priced.combined.cost.history.total, 36);
-    assert.deepEqual(priced.combined.cost.history.missing, ['jev-output-tokens']);
+    assert.deepEqual(priced.combined.cost.history.missing, []);
     assert.deepEqual(priced.pricing.models['model-a'], { source: 'test-llm', verifiedAt: '2026-10-01' });
     assert.equal(JSON.stringify(priced.pricing).includes('1000000'), false);
   } finally {
@@ -485,11 +513,121 @@ test('gateway snapshot has no history cost without prices and sums the per-clien
   }
 });
 
+// The verified Gemini defaults, as a profile without observability.pricing gets them.
+const defaultPricing = async () => configSchema.parse(await json(resolve(root, 'config/default.json'))).observability.pricing;
+const GEMINI_SOURCE = 'https://ai.google.dev/gemini-api/docs/pricing';
+// Usage as the launcher logs it: input includes the cached tokens, and output includes the reasoning tokens.
+const LITE_USAGE = { input: 2_000_000, output: 1_000_000, cached: 1_000_000, cacheWrite: 0, reasoning: 400_000 };
+const FLASH_USAGE = { input: 3_000_000, output: 500_000, cached: 1_000_000, cacheWrite: 0, reasoning: 200_000 };
+const GEMINI_LOG = [
+  { seq: 1, time: '2026-10-24T10:00:00.000Z', model: 'gemini-3.5-flash-lite', mode: 'passthrough', usage: LITE_USAGE },
+  { seq: 2, time: '2026-10-24T10:01:00.000Z', model: 'gemini-3.8-flash', mode: 'passthrough', usage: FLASH_USAGE },
+];
+const TODAY = new Date('2026-10-24T12:00:00Z');
+
+test('verified Gemini defaults cost the two observed models: thinking is inside output, cache reads at the cache rate', async () => {
+  const stub = await statusStub(answer(eventsBody()));
+  try {
+    // Each call also carries a Jev object, so the Jev price is genuinely missing rather than unused.
+    const withJev = GEMINI_LOG.map(entry => ({ ...entry, jev: { confidence: 0.4, latencyMs: 100, inputTokens: 1000 } }));
+    const status = await gatewayStatus(upstream('claude', 0, stub.origin), { pricing: await defaultPricing(), history: { claude: historyFrom(withJev) }, now: TODAY });
+    // lite: 1M uncached x 0.30 + 1M cache read x 0.03 + 1M output x 2.50 = 2.83
+    // flash: 2M uncached x 0.75 + 1M cache read x 0.075 + 0.5M output x 3.75 = 3.45
+    assert.deepEqual(status.models.history.map(entry => [entry.model, entry.cost.llm]), [['gemini-3.5-flash-lite', 2.83], ['gemini-3.8-flash', 3.45]]);
+    assert.equal(status.cost.history?.llm, 6.28);
+    assert.equal(status.cost.history?.total, null, 'Jev calls are logged but no Jev price is configured, so there is no total');
+    assert.deepEqual(status.cost.history?.missing, ['jev-price', 'jev-output-tokens']);
+  } finally { await stub.close(); }
+});
+
+test('a price is not used after its validUntil day: the model reports llm-price-expired and no LLM cost', async () => {
+  const stub = await statusStub(answer(eventsBody()));
+  try {
+    const status = await gatewayStatus(upstream('claude', 0, stub.origin), {
+      pricing: await defaultPricing(), history: { claude: historyFrom(GEMINI_LOG) }, now: new Date('2027-01-01T00:00:00Z'),
+    });
+    const [lite, flash] = status.models.history;
+    assert.equal(lite?.cost.llm, 2.83);
+    assert.equal(flash?.cost.llm, null);
+    assert.deepEqual(flash?.cost.missing, ['llm-price-expired:gemini-3.8-flash']);
+    assert.equal(status.cost.history?.llm, null);
+    assert.deepEqual(status.cost.history?.missing, ['llm-price-expired:gemini-3.8-flash']);
+  } finally { await stub.close(); }
+});
+
+test('an alias prices an unlisted model with its target rates and flags it; an alias to an unpriced target stays unpriced', async () => {
+  const pricing = { ...await defaultPricing(), aliases: { 'gemini-3.8-flash-high': 'gemini-3.8-flash', 'gemini-3.8-flash-unpriced': 'gemini-9-missing' } };
+  const log = [
+    { seq: 1, time: '2026-10-24T10:00:00.000Z', model: 'gemini-3.8-flash-high', mode: 'passthrough', usage: FLASH_USAGE },
+    { seq: 2, time: '2026-10-24T10:01:00.000Z', model: 'gemini-3.8-flash-unpriced', mode: 'passthrough', usage: FLASH_USAGE },
+  ];
+  const stub = await statusStub(answer(eventsBody()));
+  try {
+    const status = await gatewayStatus(upstream('claude', 0, stub.origin), { pricing, history: { claude: historyFrom(log) }, now: TODAY });
+    const [aliased, unpriced] = status.models.history;
+    assert.equal(aliased?.cost.llm, 3.45);
+    assert.deepEqual(aliased?.cost.aliased, { 'gemini-3.8-flash-high': 'gemini-3.8-flash' });
+    assert.equal(unpriced?.cost.llm, null);
+    assert.equal(unpriced?.cost.aliased, undefined);
+    assert.deepEqual(unpriced?.cost.missing, ['llm-price:gemini-3.8-flash-unpriced']);
+    assert.deepEqual(status.cost.history?.aliased, { 'gemini-3.8-flash-high': 'gemini-3.8-flash' });
+    assert.deepEqual(status.cost.history?.missing, ['llm-price:gemini-3.8-flash-unpriced']);
+  } finally { await stub.close(); }
+});
+
+test('billing defaults to unknown for claude and codex and subscription for agy, and an explicit option applies per gateway', async () => {
+  const origin = await refusedOrigin();
+  const snapshot = await gatewaySnapshot([upstream('claude', 8789, origin), upstream('codex', 8790, origin), upstream('agy', 8794, origin)]);
+  assert.deepEqual(snapshot.gateways.map(g => [g.client, g.billing]), [['claude', 'unknown'], ['codex', 'unknown'], ['agy', 'subscription']]);
+  const set = await gatewaySnapshot([upstream('claude', 8789, origin), upstream('agy', 8794, origin)], { billing: { claude: 'api' } });
+  assert.deepEqual(set.gateways.map(g => [g.client, g.billing]), [['claude', 'api'], ['agy', 'subscription']]);
+  assert.equal((await gatewayStatus(upstream('agy', 0, origin))).billing, 'subscription');
+});
+
+test('the pricing echo lists the merged prices: defaults plus configured models, with the configured price winning on a shared id', async () => {
+  const configured = configSchema.parse({
+    ...await json(resolve(root, 'config/default.json')) as Record<string, unknown>,
+    observability: { pricing: { models: {
+      'claude-opus-5-5': { currency: 'USD', source: 'operator rate card', verifiedAt: '2026-10-30', inputPerMTok: 15, cacheReadPerMTok: 1.5, cacheWritePerMTok: 18.75, outputPerMTok: 75 },
+      'gemini-3.8-flash': { currency: 'USD', source: 'operator rate card', verifiedAt: '2026-10-30', inputPerMTok: 1, cacheReadPerMTok: 0.1, cacheWritePerMTok: 0, outputPerMTok: 4 },
+    } } },
+  }).observability.pricing;
+  const snapshot = await gatewaySnapshot([], { pricing: configured });
+  assert.deepEqual(Object.keys(snapshot.pricing.models).sort(), ['claude-opus-5-5', 'gemini-3.5-flash-lite', 'gemini-3.8-flash']);
+  assert.deepEqual(snapshot.pricing.models['gemini-3.8-flash'], { source: 'operator rate card', verifiedAt: '2026-10-30' });
+  assert.deepEqual(snapshot.pricing.models['gemini-3.5-flash-lite'], { source: GEMINI_SOURCE, verifiedAt: '2026-10-24' });
+});
+
+test('the pricing echo shows validUntil beside source and date, and still never shows rates', async () => {
+  const snapshot = await gatewaySnapshot([], { pricing: await defaultPricing() });
+  assert.deepEqual(snapshot.pricing.models['gemini-3.8-flash'], { source: GEMINI_SOURCE, verifiedAt: '2026-10-24', validUntil: '2026-12-31' });
+  assert.deepEqual(snapshot.pricing.models['gemini-3.5-flash-lite'], { source: GEMINI_SOURCE, verifiedAt: '2026-10-24' });
+  assert.doesNotMatch(JSON.stringify(snapshot.pricing), /PerMTok|0\.075|3\.75/);
+});
+
 test('gateway snapshot with no gateways still has the full shape', async () => {
   const snapshot = await gatewaySnapshot([]);
   assert.deepEqual(snapshot.gateways, []);
   assert.equal(snapshot.combined.history.events, 0);
-  assert.equal(snapshot.combined.cost.history.total, null);
+  // No calls at all: no model is unpriced and no Jev cost exists, so the LLM and total cost are zero.
+  assert.equal(snapshot.combined.cost.history.llm, 0);
+  assert.equal(snapshot.combined.cost.history.jev, 0);
+  assert.equal(snapshot.combined.cost.history.total, 0);
+  assert.deepEqual(snapshot.combined.cost.history.missing, []);
+});
+
+test('a gateway with no Jev calls and every model priced has total equal to llm, jev 0 and nothing Jev missing', async () => {
+  const stub = await statusStub(answer(eventsBody()));
+  try {
+    const status = await gatewayStatus(upstream('claude', 0, stub.origin), {
+      pricing: { models: { 'model-a': LLM_PRICE, 'model-b': LLM_PRICE } },
+      history: { claude: historyFrom(TWO_MODEL_LOG) },
+    });
+    assert.equal(status.cost.history?.llm, 22);
+    assert.equal(status.cost.history?.jev, 0);
+    assert.equal(status.cost.history?.total, 22);
+    assert.deepEqual(status.cost.history?.missing, []);
+  } finally { await stub.close(); }
 });
 
 test('combined models merge the same model name across clients and price the merged totals', async () => {
@@ -690,4 +828,53 @@ test('gateway snapshot has no aggregator key when no gateway is running', async 
 test('the gateway module no longer exports a routing toggle', async () => {
   const mod = await import('../src/gateways.js') as Record<string, unknown>;
   assert.equal('setRouting' in mod, false);
+});
+
+test('an Antigravity gateway without its installed spec is unavailable without a connection attempt', async () => {
+  const stub = await statusStub(answer(eventsBody()));
+  try {
+    const agy = { ...upstream('agy', 8794, stub.origin), source: 'fallback' as const };
+    const [status] = (await gatewaySnapshot([agy])).gateways;
+    assert.equal(status?.state, 'unavailable');
+    assert.equal(status?.metrics, 'unavailable');
+    assert.equal((await gatewayStatus(agy)).state, 'unavailable');
+    assert.equal(stub.seen.length, 0);
+  } finally { await stub.close(); }
+});
+
+test('an installed Antigravity gateway that is not listening reads as stopped and always reports passthrough', async () => {
+  const status = await gatewayStatus(upstream('agy', 0, await refusedOrigin()));
+  assert.equal(status.state, 'stopped');
+  assert.equal(status.metrics, 'offline');
+  assert.equal(status.experiment, 'passthrough');
+});
+
+test('the Antigravity log joins the snapshot and the combined totals, but not the combined comparison', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'jev-agy-snapshot-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'agy.log');
+  const line = (usage: Record<string, number>): string => JSON.stringify({
+    event: 'route', time: '2026-10-22T10:00:00.000Z', mode: 'passthrough', reason: 'routing_disabled', model: 'gemini-3-pro', usage,
+  });
+  await writeFile(file, `${line({ input: 119, output: 3 })}\n${line({ input: 23192, output: 102, reasoning: 93 })}\n`);
+  const claudeLog = [{ mode: 'forced', usage: { input: 100, output: 5, cached: 0, cacheWrite: 0, reasoning: 0 }, durationMs: 1000 }];
+
+  const snapshot = await gatewaySnapshot(
+    [upstream('claude', 8789, await refusedOrigin()), upstream('agy', 8794, await refusedOrigin())],
+    { history: { claude: historyFrom(claudeLog), agy: () => createHistoryReader(file).refresh() } },
+  );
+
+  const agy = snapshot.gateways.find(g => g.client === 'agy');
+  assert.equal(agy?.history?.events, 2);
+  assert.equal(agy?.history?.llm.input, 23311);
+  assert.equal(snapshot.combined.history.events, 3);
+  assert.equal(snapshot.combined.history.llm.input, 23411);
+  assert.equal(snapshot.combined.history.llm.output, 110);
+  assert.equal(snapshot.combined.historyCompare?.withJev.requests, 1);
+  assert.equal(snapshot.combined.historyCompare?.baseline.requests, 0);
+});
+
+test('the aggregator names only claude and codex as peers, never the Antigravity port', () => {
+  const gateways = [upstream('codex', 8790), upstream('claude', 8789), upstream('agy', 8794)];
+  assert.equal(aggregatorFor(gateways, { codex: 'running', agy: 'running' })?.url, 'http://localhost:8790/dashboard?peers=8789');
 });

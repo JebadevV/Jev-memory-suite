@@ -7,7 +7,7 @@ import type { Aggregator } from '../src/gateways.js';
 
 const AGGREGATOR: Aggregator = { client: 'codex', port: 8790, origins: ['http://localhost:8790', 'http://127.0.0.1:8790'], url: 'http://localhost:8790/dashboard?peers=8789' };
 const QUOTED = { ...AGGREGATOR, url: 'http://localhost:8790/dashboard?peers="8789"&x=<1>' };
-const OBS_SCOPES = ['claude', 'codex', 'combined'];
+const OBS_SCOPES = ['claude', 'codex', 'agy', 'combined'];
 const OBS_ROW_KEYS = ['requests', 'jevCalls', 'jevInput', 'jevOutput', 'llmInput', 'cacheRead', 'cacheWrite', 'llmOutput', 'blocking', 'avoided', 'cost', 'period'];
 
 test('html with an aggregator renders exactly one iframe pointing at it', () => {
@@ -65,9 +65,40 @@ test('html has the token observability section with claude, codex and combined c
   assert.ok(html.includes('Tokens de saída do Jev não são registrados pelo gateway.'));
 });
 
+test('html labels the Antigravity card and the combined card of all three clients', () => {
+  const html = dashboardHtml(AGGREGATOR);
+  assert.ok(html.includes('id="obs-agy"'));
+  assert.ok(html.includes('>Antigravity</h3>'));
+  assert.ok(html.includes('Combinado (Claude + Codex + Antigravity)'));
+  assert.ok(html.includes('id="obs-agy-compare-title"'));
+  assert.ok(html.includes('id="obs-agy-compare-wrap"'));
+  assert.ok(html.indexOf('id="obs-codex"') < html.indexOf('id="obs-agy"'));
+  assert.ok(html.indexOf('id="obs-agy"') < html.indexOf('id="obs-combined"'));
+});
+
+test('script counts all three clients and states that Antigravity is passthrough', () => {
+  assert.ok(dashboardJs.includes("var GW_CLIENTS = ['claude', 'codex', 'agy'];"));
+  assert.ok(dashboardJs.includes('Passthrough: este gateway não roteia pelo Jev.'));
+  assert.ok(dashboardJs.includes('Somente Claude e Codex entram nesta comparação.'));
+});
+
 test('html puts the observability section before the embedded gateway panel', () => {
   const html = dashboardHtml(AGGREGATOR);
   assert.ok(html.indexOf('id="token-observability"') < html.indexOf('id="gateway-slot"'));
+});
+
+test('each client card names its cost as an API price estimate and has a billing line; the combined card has none', () => {
+  const html = dashboardHtml(AGGREGATOR);
+  assert.ok(html.includes('Estimativa de preço de API (USD)'));
+  for (const scope of ['claude', 'codex', 'agy']) assert.ok(html.includes(`id="obs-${scope}-billing"`), scope);
+  assert.equal(html.includes('id="obs-combined-billing"'), false);
+});
+
+test('script words the billing line for subscription, api and unknown, and marks alias, expiry and missing Jev price', () => {
+  for (const text of [
+    'Cobrança real: assinatura (custo por token não se aplica)', 'Cobrança real: API por token', 'Base de cobrança não configurada',
+    'preço equivalente assumido', 'preço vencido em', 'sem preço do Jev', 'válido até',
+  ]) assert.ok(dashboardJs.includes(text), text);
 });
 
 test('html has no toolbar, timeline, request table, router state or csrf meta', () => {
