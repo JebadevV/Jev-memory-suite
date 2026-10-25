@@ -197,7 +197,7 @@ index 0000000..b5b6ff0
 +  metadata,
 +};
 diff --git a/src/app.ts b/src/app.ts
-index 06385b2..4f96589 100644
+index 06385b2..af33e10 100644
 --- a/src/app.ts
 +++ b/src/app.ts
 @@ -3,7 +3,9 @@ import { brotliDecompressSync, gunzipSync, inflateSync, zstdDecompressSync } fro
@@ -226,7 +226,7 @@ index 06385b2..4f96589 100644
  
    app.use("*", async (c, next) => {
      if (!config.routerApiKey) return next();
-@@ -338,6 +343,43 @@ export function createApp({ config, askJev, fetch: fetchImpl = fetch, log: write
+@@ -338,6 +343,44 @@ export function createApp({ config, askJev, fetch: fetchImpl = fetch, log: write
      return c.json({ error: { message: "Invalid jev-gateway API key", type: "invalid_api_key" } }, 401);
    });
  
@@ -236,7 +236,8 @@ index 06385b2..4f96589 100644
 +  if (config.codeAssist) {
 +    app.route(
 +      "/dashboard",
-+      dashboardRoutes(config, events, { get: () => routing, set: (enabled) => void (routing = enabled) }),
++      // Defense in depth: even if the route above were reached, agy can never switch routing on.
++      dashboardRoutes(config, events, { get: () => routing, set: (enabled) => void (routing = config.codeAssist ? false : enabled) }),
 +    );
 +    // The route is read from the raw pathname, the one forward sends upstream: no prefix match, no
 +    // decoding. The query is only measured here, never read.
@@ -270,6 +271,16 @@ index 06385b2..4f96589 100644
    /**
     * Dry run: what would the router do with this body? Calls Jev, never upstream.
     * Accepts any routed wire format; `?format=chat|responses|messages` overrides the guess.
+@@ -363,7 +406,8 @@ export function createApp({ config, askJev, fetch: fetchImpl = fetch, log: write
+ 
+   app.route(
+     "/dashboard",
+-    dashboardRoutes(config, events, { get: () => routing, set: (enabled) => void (routing = enabled) }),
++    // Defense in depth: agy can never switch routing on, whatever the dashboard route does.
++    dashboardRoutes(config, events, { get: () => routing, set: (enabled) => void (routing = config.codeAssist ? false : enabled) }),
+   );
+ 
+   app.post("/v1/chat/completions", route(chatAdapter));
 diff --git a/src/codeassist.ts b/src/codeassist.ts
 new file mode 100644
 index 0000000..65cbe43
@@ -536,6 +547,19 @@ index 6e753e9..bc77694 100644
  const sources = [...ports].map((port) => ({
    port,
    own: port === ownPort,
+diff --git a/src/dashboard.ts b/src/dashboard.ts
+index ad88cd3..af356ae 100644
+--- a/src/dashboard.ts
++++ b/src/dashboard.ts
+@@ -57,6 +57,8 @@ export function dashboardRoutes(config: Config, events: EventLog, routing: Routi
+    * name the origin of a cross-site POST, and only this machine's own pages may flip the switch.
+    */
+   routes.post("/routing", (c) => {
++    // agy (Code Assist) never reaches Jev, so there is nothing for the switch to turn on: refuse before reading anything.
++    if (config.codeAssist) return c.json({ error: "routing is locked off for Code Assist (agy)" }, 403);
+     const origin = c.req.header("origin");
+     if (origin && !LOCAL_ORIGIN.test(origin)) return c.json({ error: "local pages only" }, 403);
+     if (origin) c.header("access-control-allow-origin", origin);
 diff --git a/src/upstream.ts b/src/upstream.ts
 index 6b41293..cc8e3de 100644
 --- a/src/upstream.ts
@@ -1354,10 +1378,10 @@ index 0000000..53f00d7
 +});
 diff --git a/test/codeassist.test.ts b/test/codeassist.test.ts
 new file mode 100644
-index 0000000..4e360f8
+index 0000000..cfbef50
 --- /dev/null
 +++ b/test/codeassist.test.ts
-@@ -0,0 +1,522 @@
+@@ -0,0 +1,581 @@
 +import { createServer, type Server } from "node:http";
 +import type { AddressInfo } from "node:net";
 +import { readFileSync } from "node:fs";
@@ -1810,6 +1834,65 @@ index 0000000..4e360f8
 +    expect(isCodeAssistUpstream("https://daily-cloudcode-pa.googleapis.com/")).toBe(true);
 +    expect(isCodeAssistUpstream("not a url")).toBe(false);
 +    expect(isCodeAssistUpstream("https://daily-cloudcode-pa.googleapis.com#x")).toBe(false);
++  });
++});
++
++describe("agy: routing switch", () => {
++  const LOCAL = "http://localhost:8794";
++  const FOREIGN = "https://evil.example";
++  const toggles = ["?enabled=true", "?enabled=false", "?enabled=garbage", ""];
++  const origins: (string | undefined)[] = [undefined, LOCAL, FOREIGN];
++  const refusal = { error: "routing is locked off for Code Assist (agy)" };
++
++  it("answers 403 to every toggle, whatever the parameter or origin, and reports routing off afterwards", async () => {
++    const { app, upstream } = setup();
++    for (const query of toggles) {
++      for (const origin of origins) {
++        const response = await app.request(`/dashboard/routing${query}`, { method: "POST", headers: origin ? { origin } : {} });
++        expect(response.status, `${query} ${origin ?? "no origin"}`).toBe(403);
++        expect(await response.json()).toEqual(refusal);
++      }
++    }
++    const feed = (await (await app.request("/dashboard/events")).json()) as { router: { routing: boolean } };
++    expect(feed.router.routing).toBe(false);
++    expect(upstream.calls).toHaveLength(0);
++  });
++
++  // The real agy config has routing off, so the decision is routing_disabled; with routing forced on, the adapter's own gate
++  // must still answer codeassist_passthrough_only. Both cases must forward untouched and never ask Jev.
++  for (const [label, overrides, reason] of [
++    ["routing off (the real agy config)", {}, "routing_disabled"],
++    ["routing forced on (the adapter gate)", { routing: true, shadow: true }, "codeassist_passthrough_only"],
++  ] as const) {
++    it(`keeps generation a passthrough after every rejected toggle, with ${label}, and never asks Jev`, async () => {
++      const { app, post, logged, jev, upstream } = setup(overrides, () => new Response(SSE_BODY, { headers: { "content-type": "text/event-stream" } }));
++      for (const query of toggles) await app.request(`/dashboard/routing${query}`, { method: "POST", headers: { origin: LOCAL } });
++
++      const body = JSON.stringify(agyBody());
++      const response = await post(STREAM, body);
++      expect(response.status).toBe(200);
++      expect(await response.text()).toBe(SSE_BODY);
++
++      expect(upstream.calls).toHaveLength(1);
++      expect(upstream.calls[0]!.url).toBe(`${CA}${STREAM}`);
++      expect(upstream.calls[0]!.text).toBe(body);
++      expect(jev.requests).toHaveLength(0);
++      await until(() => logged.some((entry) => entry.event === "route"));
++      expect(logged.find((entry) => entry.event === "route")).toMatchObject({ reason });
++    });
++  }
++
++  it("still lets a non-agy client switch routing on and reports it", async () => {
++    const app = createApp({
++      config: testConfig({ client: "claude", codeAssist: false, routing: false, upstreamBaseUrl: "https://llm.test/v1" }),
++      askJev: fakeJev({}).askJev,
++      fetch: recordingFetch(() => okJson()).fetchImpl,
++    });
++    const response = await app.request("/dashboard/routing?enabled=true", { method: "POST", headers: { origin: LOCAL } });
++    expect(response.status).toBe(200);
++    expect(await response.json()).toEqual({ routing: true });
++    const feed = (await (await app.request("/dashboard/events")).json()) as { router: { routing: boolean } };
++    expect(feed.router.routing).toBe(true);
 +  });
 +});
 +

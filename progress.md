@@ -808,3 +808,39 @@ Pendências:
 - Os métodos de chat auxiliares (`generateChat`, `streamGenerateChat`, `tabChat`, `internalAtomicAgenticChat`, `completeCode`, `generateCode`, `transformCode`) não têm contagem de tokens no painel. Se o agy gerar por algum deles, esses tokens não aparecem.
 - Os templates `**` de `proxyCommand` e `streamProxyCommand` seguem bloqueados. Um recurso remoto do agy que os use não funciona pelo gateway; `JMS_AGY_GATEWAY=off` contorna.
 - Roteamento ativo segue NO-GO (ADR 0015, Marco 3).
+
+## Antigravity: endurecimento do Gateway v2 (2026-10-24)
+
+Propósito: registrar a ativação da `53948cb9` só no gateway agy, a correção do toggle de roteamento no modo Code Assist, a regressão pós-commit e a avaliação do advisory do zod. Público: mantenedores. Data: 2026-10-24. Decisões: [ADR 0015](docs/architecture/adr/0015-jev-gateway-antigravity-code-assist.md) (endurecimento do gateway Code Assist).
+
+### A: mudanças
+
+- **Instalação e ativação (commit `8757339c`, local, sem push).** `jev-memory install gateway` gerou `53948cb9899f6c20e48c79e1b6d04223bbc26ca1` (anterior `4e03786dda52c2aecf9012181612da717015fe62`; `0d15e05e48151c3423a50558ede7e101d6c83ae8` também preservada). Só o gateway agy (8794) foi reiniciado, via `jev-agy --stop` da versão antiga e `jev-agy --start` da nova: PID 24060 -> 4980, `/health` com `codeAssist: 2`.
+- **Achado de segurança.** No modo agy, `POST /dashboard/routing?enabled=true` respondia 200 e ligava o flag de roteamento em memória (o gateway agy roda sem `ROUTER_API_KEY`). Sem efeito prático, porque `toInput` do adaptador Code Assist sempre devolve skip, mas a garantia dependia de uma só trava. Durante a validação de 2026-10-24 o toggle foi acionado uma vez por engano no 8794 e revertido em seguida (`{"routing":false}`); o log não teve nenhuma linha com `mode` no intervalo.
+- **Correção no patch (`patches/jev-gateway/0.5.1/codeassist-agy.patch`).** `src/dashboard.ts` recusa `POST /dashboard/routing` com 403 (`routing is locked off for Code Assist (agy)`) como primeira instrução quando `config.codeAssist`, sem ler query nem origin. `src/app.ts` torna o `set` do switch um no-op no modo agy (`routing = config.codeAssist ? false : enabled`) nas duas chamadas de `dashboardRoutes`. Clientes fora do agy mantêm o toggle. Patch: 26 arquivos (antes 25; entrou `src/dashboard.ts`), 2.586 linhas, 0 CR. `CODE_ASSIST_PATCH_VERSION` continua 2 (o contrato de rotas não mudou).
+- **Testes novos no patch (`test/codeassist.test.ts`, describe `agy: routing switch`, 4 testes).**
+  - 403 para 4 parâmetros x 3 origens com routing false depois e zero chamadas ao upstream.
+  - Geração segue passthrough intacto, sem chamar o Jev, com a config real (motivo `routing_disabled`) e com routing forçado (motivo `codeassist_passthrough_only`).
+  - Cliente não-agy ainda alterna o routing (200).
+
+### B: validação (2026-10-24)
+
+- Pós-commit, contra a `53948cb9` (só mocks locais, sem chamadas pagas): `test:claude-launch` 7/7, `test:codex-launch` 12/12, `test:headroom` 7/7, `test:headroom-codex` 11/11 e `test:semantic` 1/1. Depois da correção, nova rodada de `test:claude-launch` 7/7 e `test:codex-launch` 12/12. Durante a rodada, o gateway do teste rodou de `53948cb9…\src\index.ts` (amostra de processo). `test:codex-launch` usou a versão não commitada de `test/codex-launch-e2e.ts` do usuário.
+- Suíte: `npm test` 588/588, sem skips, com 50.217 sentinelas inalteradas. Antes do commit, também build, typecheck e lint ok, `test:e2e` 4/4, `test:projects` 1/1 e E2E de recuperação 2/2.
+- Jev com o patch novo: 578 testes, 576 passam (antes 574/572). As 2 falhas são as pré-existentes do Windows (`opencode-coverage` ×1, `setup` 0600 ×1). Code Assist e health: 190/190. Typecheck e build ok. `applyGatewayPatches` aplicou o patch novo em cópias LF e CRLF da fonte vendorizada.
+- Gateway agy em produção (`53948cb9`), sondas sem chegar ao upstream: método desconhecido, `proxyCommand`, `agentPlugins/..`, `agentPlugins/a/b`, `/v1/messages`, `/v1beta/*` e `/router/decide` 404; verbo errado, HEAD e OPTIONS 405; query acima de 4096 caracteres 414. `GET /v1internal/buildWithGooglePlugins` sem token chegou ao upstream fixo e voltou 401 do Google (antes era 404 local). Log sem `Bearer`, `ya29.`, `authorization`, `systemInstruction` nem `thoughtSignature`.
+- Compatibilidade da versão compartilhada: o gateway Claude (8789, PID 24728) roda `0d15e05…` e só muda no próximo start. Entre `0d15` e `53948cb9`, as mudanças de `app.ts`, `config.ts` e `upstream.ts` ficam atrás de `config.codeAssist`. Fora do agy, só `usage.ts` muda (pensamentos do Gemini contam como saída), o que afeta só o cliente Gemini.
+- Escopo do `jev-memory restart` (não executado): para e sobe só o supervisor do perfil `default` (PID 34664), com `ai-memory.exe` (36364) e o dashboard dentro do processo. `suite.json` tem `gateway.enabled: false` (porta 18878). Os gateways 8789 (pai 10380) e 8794 (pai 37852) não são filhos do supervisor e não são afetados. `freePort` só sonda a porta e não mata processo.
+- Zod (GHSA-mrhx-c7xc-m3w5, high, CVSS 7,5, CWE-770, < 4.6.6): a suíte usa `zod@4.3.6` fixado; o gateway não depende de zod (runtime só hono). Na suíte, zod valida só entradas locais (config, stdin de hook, MCP local, ai-memory local; dashboard só em 127.0.0.1 com checagem de Host). Avaliação isolada do bump para `4.6.7` exato: só `package.json` e `package-lock.json` (2 entradas do lock: raiz e `node_modules/zod`), typecheck e lint ok, mesmos resultados de teste que a base na cópia sem `.local/`, `npm audit --omit=dev` com 0 vulnerabilidades. Não aplicado.
+
+### C: limites e pendências
+
+- O gateway agy em execução (`53948cb9`) ainda aceita o toggle. A correção só vale depois de `jev-memory install gateway` (próximo id calculado: `8a497c5a782436f7b2e4664cc61e924f95f6f311`) e de reiniciar só o gateway agy, o que exige aprovação.
+- Bump do zod para 4.6.7 proposto como mudança separada (patch de 42 linhas fora do repositório). Aplicar depois de rodar a suíte completa com `.local/`. A 4.6.7 foi publicada em 2026-10-12.
+- Continuam:
+  - sessão real do agy na v2 não validada;
+  - `proxyCommand` e `streamProxyCommand` bloqueados;
+  - métodos de chat auxiliares sem contagem de tokens;
+  - card do painel só após `jev-memory restart`;
+  - Claude passa para `53948cb9` (ou a próxima) no próximo start;
+  - roteamento ativo do AGY segue NO-GO.

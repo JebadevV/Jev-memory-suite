@@ -4,11 +4,11 @@
 
 `0.5.1/codeassist-agy.patch` adiciona ao jev-gateway 0.5.1 um adaptador para a Code Assist API, usada pelo Antigravity CLI (`agy`). Com `JEV_CLIENT=agy`, o gateway vira um repasse puro: o tráfego de geração (`streamGenerateContent`, `generateContent`) e as rotas de conta, cota e auxiliares são encaminhadas ao upstream sem serem lidas nem roteadas pelo Jev. São 64 rotas, listadas em [Rotas suportadas](#rotas-suportadas). A rota `jev-agy` e o launcher `agy` apontam o CLI para o gateway local por `CLOUD_CODE_URL`.
 
-O patch é cumulativo: contém a versão 2 do patch, as alterações do Marco 3 (testes multi-turno e isolamento do home dos testes) e o contrato de rotas 2 (`CODE_ASSIST_PATCH_VERSION` = 2). Tamanho atual: 25 arquivos e 2.503 linhas, sem CR (LF canônico). Em relação ao patch anterior, entraram `src/upstream.ts` e `test/codeassist-routes.test.ts`.
+O patch é cumulativo: contém a versão 2 do patch, as alterações do Marco 3 (testes multi-turno e isolamento do home dos testes) e o contrato de rotas 2 (`CODE_ASSIST_PATCH_VERSION` = 2). Tamanho atual: 26 arquivos e 2.586 linhas, sem CR (LF canônico). Em relação ao patch anterior, entraram `src/upstream.ts` e `test/codeassist-routes.test.ts`.
 
 Arquivos alterados:
 
-- Código do gateway: `src/codeassist.ts` (novo; nomes dos métodos, validação do upstream e leitura do método a partir do caminho), `src/adapters/codeassist.ts` (novo; reutiliza o adaptador Gemini, com `toInput` sempre em skip), `src/config.ts` (campo `codeAssist` e recusas de configuração do modo agy), `src/app.ts` (no modo agy, só `/health`, `/dashboard`, `/v1internal:<método>` e `/v1internal/<caminho>`), `src/usage.ts` (no ramo Gemini, `thoughtsTokenCount` conta como saída e como `reasoning`) e `src/dashboard.html` (porta 8794 na lista de portas observadas).
+- Código do gateway: `src/codeassist.ts` (novo; nomes dos métodos, validação do upstream e leitura do método a partir do caminho), `src/adapters/codeassist.ts` (novo; reutiliza o adaptador Gemini, com `toInput` sempre em skip), `src/config.ts` (campo `codeAssist` e recusas de configuração do modo agy), `src/app.ts` (no modo agy, só `/health`, `/dashboard`, `/v1internal:<método>` e `/v1internal/<caminho>`), `src/dashboard.ts` (no modo agy, `POST /dashboard/routing` responde 403), `src/usage.ts` (no ramo Gemini, `thoughtsTokenCount` conta como saída e como `reasoning`) e `src/dashboard.html` (porta 8794 na lista de portas observadas).
 - Cliente e launcher: `bin/clients.mjs` e `bin/jev-agy.mjs` (spec com `passthroughOnly: true` e launcher), `bin/launcher.mjs` (com `passthroughOnly`, não pede nem exige chave do Jev) e `package.json` (entrada `jev-agy`).
 - Testes: `test/codeassist.test.ts` (novo), `test/codeassist-multiturn.test.ts` (novo; 32 testes sobre as fixtures), `test/fixtures/codeassist/*.json` (novo; 4 fixtures: turno sequencial, chamadas paralelas, assinatura em SSE e histórico concluído), `test/health.test.ts`, `test/kilo.test.ts`, `test/launcher.test.ts`, `test/usage.test.ts` e `test/setup.test.ts`.
 - Isolamento do home: `vitest.config.ts` e `test/isolate-home.setup.ts` (novos).
@@ -53,7 +53,7 @@ pnpm test
 node node_modules/typescript/bin/tsc -p tsconfig.build.json
 ```
 
-Resultado atual (2026-10-24, contrato 2, Windows 10, com o home isolado por arquivo): 574 testes, 572 passam. Falham 2, ambas herdadas do upstream no Windows: `test/opencode-coverage.test.ts` ×1 e `test/setup.test.ts` ×1 (a checagem de modo 0600 do arquivo de chave, que no Windows dá 0666). O patch aplica limpo nas cópias LF e CRLF. `test/codeassist-routes.test.ts` tem 96 testes novos. Os quatro arquivos de Code Assist e health somam 186/186, conferidos em separado.
+Resultado atual (2026-10-24, contrato 2, Windows 10, com o home isolado por arquivo): 578 testes, 576 passam. Falham 2, ambas herdadas do upstream no Windows: `test/opencode-coverage.test.ts` ×1 e `test/setup.test.ts` ×1 (a checagem de modo 0600 do arquivo de chave, que no Windows dá 0666). O patch aplica limpo nas cópias LF e CRLF. `test/codeassist-routes.test.ts` tem 96 testes novos. Os quatro arquivos de Code Assist e health somam 190/190, conferidos em separado.
 
 Histórico: no Marco 3 (contrato 1, 2026-10-24), o resultado foi 478 testes, 476 passam, com as mesmas 2 falhas. Na versão 1 do patch, o upstream puro tinha 400 testes, com 3 falhas pré-existentes; com o patch v1, eram 438 testes e as mesmas 3 falhas. Na versão 2, com o home temporário, eram 446 testes, com 444 passando.
 
@@ -89,6 +89,7 @@ A suíte (`src/launch.ts`, `AGY_CODE_ASSIST_VERSIONS = [1, 2]`) aceita o gateway
 - Redirects: no modo agy, `fetch` usa `redirect: "manual"`. Qualquer 3xx do upstream vira 502 `upstream_redirect_refused`, sem `Location` nem corpo, porque o token Google do usuário não pode seguir redirect. Os outros clientes (Claude, Codex, Gemini) não recebem a opção, e há teste para isso.
 - Destino fixo: `config.upstreamBaseUrl` (allowlist HTTPS de 2 hosts), com pathname validado e query.
 - Auxiliares repassam bytes, gzip, SSE e `authorization` intactos. Não há linha `route` no log, porque a métrica de LLM conta só linhas com `mode`; as linhas 404, 405 e 414 também não têm `mode`.
+- Routing travado no agy: em `JEV_CLIENT=agy`, `POST /dashboard/routing` responde 403 com qualquer parâmetro ou origem, sem alterar o estado, e o switch do gateway não consegue ligar o roteamento (ele fica `false` mesmo se chamado). Isso é coberto por teste.
 - Sem chave Jev no agy: o launcher não pergunta nem exige chave (`passthroughOnly`). O gateway força `routing` a `false` e recusa shadow no `loadConfig` do modo agy, então o roteador nunca chama o Jev.
 - Log sem segredos: o log registra só o nome do método, ou o primeiro segmento após `/v1internal/` (só `[A-Za-z0-9_]`, até 64 caracteres), nunca o corpo, o token, o resto do caminho, a query ou o texto do prompt. Isso é coberto por teste.
 - Modo normal inalterado: fora do `JEV_CLIENT=agy`, o comportamento é o mesmo de antes, e `/v1internal:*` continua 404.

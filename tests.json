@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-24T19:00:00.000Z",
+  "updatedAt": "2026-10-24T20:00:00.000Z",
   "checks": [
     {
       "id": "M0-executor",
@@ -945,6 +945,14 @@
       "command": "npm test (testes de trava com injecao fsOps em finalizeAgyLaunch e AgyRecoveryDeps, sem mudanca de producao); test/agy-recovery-e2e.ts (janela de console real, 2/2)",
       "observed": "EBUSY duas vezes e depois sucesso; EBUSY sempre, mantendo arquivos e owner, com recuperacao posterior; EPERM e EACCES como EBUSY; EINVAL sem retry e sem lancar; EBUSY na recuperacao dando claimed-by-other e recuperacao posterior; exatamente 6 tentativas (1 + 5) e 5 esperas. npm test 588/588 sem skips. E2E de recuperacao 2/2. Os erros sao simulados por fsOps; trava real de processo no Windows nao foi reproduzida. Fecha o risco caminho EBUSY sem teste registrado na finalizacao.",
       "evidence": "progress.md, secao Antigravity: compatibilidade Code Assist (2026-10-24)"
+    },
+    {
+      "id": "M-agy-9",
+      "scope": "Antigravity (Gateway v2): ativacao da 53948cb9 so no gateway agy, regressao pos-commit, toggle de routing travado no modo agy (403 e set no-op) e avaliacao do advisory do zod",
+      "status": "passed",
+      "command": "npm test; test:claude-launch; test:codex-launch; test:headroom; test:headroom-codex; test:semantic; Jev com o patch (vitest, incluindo agy: routing switch); applyGatewayPatches em copias LF e CRLF; sondas locais 404/405/414 no 8794; avaliacao isolada de zod 4.6.7",
+      "observed": "Ativacao 53948cb9 so no gateway agy: PID 24060 -> 4980, /health com codeAssist 2. Regressao pos-commit: npm test 588/588 sem skips, 50.217 sentinelas inalteradas; test:claude-launch 7/7; test:codex-launch 12/12; test:headroom 7/7; test:headroom-codex 11/11; test:semantic 1/1. Jev com o patch: 578 testes, 576 passam (2 falhas pre-existentes do Windows: opencode-coverage x1, setup 0600 x1); Code Assist e health 190/190. Patch: 26 arquivos, 2.586 linhas, 0 CR. applyGatewayPatches em copias LF e CRLF ok. Sondas locais 404/405/414 ok. Zod 4.6.7 avaliado isoladamente: npm audit --omit=dev com 0 vulnerabilidades, sem aplicar. O gateway agy em execucao ainda precisa de jev-memory install gateway e reinicio para o 403.",
+      "evidence": "progress.md, secao Antigravity: endurecimento do Gateway v2 (2026-10-24)"
     }
   ],
   "milestones": {
