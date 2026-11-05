@@ -118,6 +118,8 @@ const env = {
   APPDATA: appData,
   ...(process.platform === 'win32' ? { HOMEDRIVE: drive.replace(/[\\/]+$/, ''), HOMEPATH: home.slice(drive.length - 1) } : {}),
   ...(uvToolsDir ? { UV_TOOL_DIR: uvToolsDir } : {}),
+  // Tests launch clients in scratch projects; they must not start a template profile's supervisor that nothing stops.
+  JMS_CENTRAL_DASHBOARD: 'off',
 };
 // A client home set in the caller's environment would point at the real one; send it to the temporary home.
 if (process.env.CODEX_HOME) env.CODEX_HOME = join(home, '.codex');

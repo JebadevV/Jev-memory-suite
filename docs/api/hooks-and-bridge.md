@@ -1,6 +1,6 @@
 # Hooks e bridge MCP
 
-Propósito: documentar o comando dos hooks nativos, os eventos por cliente, os payloads aceitos e seus limites, e a bridge MCP do perfil. Público: integradores e mantenedores. Data: 2026-10-23.
+Propósito: documentar o comando dos hooks nativos, os eventos por cliente, os payloads aceitos e seus limites, e a bridge MCP do perfil. Público: integradores e mantenedores. Data: 2026-10-25.
 
 ## Hooks nativos
 
@@ -99,11 +99,14 @@ Os hooks ficam em `.agents/hooks.json` do workspace, no grupo `jev-memory-suite`
 | Evento do agy | Argumento `<evento-nativo>` | Saída do hook |
 |---|---|---|
 | `PreInvocation` | `session-start` | Saída nativa do motor. O handoff pendente é entregue por `injectSteps[].ephemeralMessage` |
+| `PreInvocation` com `invocationNum = 0`, depois do session-start | `user-prompt` | Sem contexto injetado. Texto fixo, sem conteúdo do prompt |
 | `PreToolUse` | `pre-tool-use` | `{"decision":"allow"}` |
 | `PostToolUse` | `post-tool-use` | Saída nativa do motor |
 | `Stop` | `stop` | `{"decision":""}` |
 
 `SessionStart` e `PostInvocation` não são usados. O motor nativo do AI Memory inicia a sessão só em `PreInvocation` com `invocationNum = 0`, e deduplica por `conversationId`. O `invocationNum` volta a 0 a cada turno do usuário. `Stop` é fim de turno, não fim de sessão.
+
+O `user-prompt` não vem do agy, porque o contrato de hook do agy não expõe o texto do prompt. Com `invocationNum = 0`, o hook faz, depois do session-start, um segundo spawn nativo `user-prompt` com o texto fixo `<agy-user-turn/>`. Emite um por turno do usuário, e `invocationNum > 0` não emite. O marcador segue o predicado nativo de scaffolding do upstream (`looks_like_markup_block`): começa com bloco de markup, então não entra em resumo, em perguntas em aberto nem em título, e a sessão continua substantiva pela observação `user-prompt`. Antes, o texto em inglês aparecia nesses resumos. Motivo: sem observação substantiva, o session-end de uma sessão sem ferramentas devolvia ao pool o handoff reivindicado, e ele era reentregue. Resíduo: a lista `## Prompts` da página de sessão imprime o título bruto da observação, então o marcador pode aparecer ali, e o FTS indexa os tokens `agy`, `user` e `turn`. Uma falha desse spawn vai para `hook-errors.log` e não afeta a saída do session-start. Para o agy, esse spawn não busca handoff nem injeta contexto. Detalhes em [ADR 0012](../architecture/adr/0012-antigravity-cli-integration.md) (acréscimo de 2026-10-25).
 
 Contrato de saída, testado no agy:
 

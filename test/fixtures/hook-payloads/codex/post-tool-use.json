@@ -1,0 +1,15 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "turn_id": "00000000-0000-4000-8000-000000000003",
+  "transcript_path": "C:/fixture/project/transcript.jsonl",
+  "cwd": "C:/fixture/project",
+  "hook_event_name": "PostToolUse",
+  "model": "gpt-6.1-sol",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "echo fixture"
+  },
+  "tool_response": "fixture output",
+  "tool_use_id": "exec-00000000-0000-4000-8000-000000000004"
+}

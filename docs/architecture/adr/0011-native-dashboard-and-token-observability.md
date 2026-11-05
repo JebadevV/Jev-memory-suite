@@ -87,3 +87,14 @@ Este acréscimo não reescreve a decisão 7. Ela continua valendo para qualquer 
 - **Custo Jev sem chamadas (2026-10-24).** Sem chamadas Jev (`calls` 0 e `inputTokens` 0), o custo Jev é 0, e nem `jev-price` nem `jev-output-tokens` entram em `missing`. O total passa a ser o custo LLM. Isso vale também para o gateway agy (só repasse), que antes mostrava `total: null` mesmo com preço para `gemini-3.5-flash-lite`, e para o agregado. Com chamadas Jev, nada muda.
 
 Os custos seguem sendo estimativas de preço de API, não cobrança de assinatura nem economia confirmada. Detalhes em [configuração, preços para custo estimado](../../guides/configuration.md#preços-para-custo-estimado).
+
+## Acréscimo (2026-10-25): painel AGY e `agyLive`
+
+Este acréscimo não altera as decisões acima. O agy ganhou um bloco próprio no painel, porque o card no formato de Claude e Codex aparecia como "Indisponível".
+
+- **Causa.** `applyGateways` em `src/dashboard-gateway-script.ts` montava `gateways` só com `claude` e `codex` e descartava o agy. O card recebia sempre `null`. Corrigido no frontend.
+- **Bloco AGY.** `#obs-agy` fica entre Codex e Combinado. Mostra o modo passthrough com roteamento travado, o contrato Code Assist, PID, tempo ativo, host do upstream e a base de cobrança (`subscription`). Traz seis indicadores da janela recente, modelos do histórico e até 15 atividades recentes. Não mostra custo, comparação com e sem Jev, cache de escrita nem experimento, porque o agy só faz repasse.
+- **Campo `agyLive`.** Aparece em `GET /gateways/status` só na entrada do agy. Contém `pid`, `codeAssist`, `routing`, `startedAt`, `window` (contagens, status, tokens, p50 e p90) e `recent` (até 15 itens com `model`, `method`, `status`, `durationMs` e tokens). Não contém conteúdo de prompt, chave nem token. Vem dos mesmos `/dashboard/events` e `/health` já consultados, sem chamadas novas. Claude e Codex não ganham o campo.
+- **Exceção à lista de campos ausentes.** A seção Segurança acima diz que `/gateways/status` não contém `pid`. Com `agyLive`, o `pid` do gateway agy passa a aparecer. É um identificador de processo local, exposto só pelo dashboard em 127.0.0.1 e só nessa entrada. Os demais campos seguem a regra.
+- **Janela recente.** A janela inclui eventos anteriores ao `startedAt`, porque o gateway recarrega o log ao iniciar. Por isso o painel diz "janela recente", e não sessão.
+- **Validação.** Dados reais via `gatewaySnapshot`, em harness fora do repositório, sem build nem restart. Em 390 px, `scrollWidth` = `clientWidth`. Registro: check `M-agy-obs-1` em [tests.json](../../../tests.json) e seção de 2026-10-25 em [progress.md](../../../progress.md). O painel vivo só mostra a mudança depois de `jev-memory restart`, que não foi executado nesta data.

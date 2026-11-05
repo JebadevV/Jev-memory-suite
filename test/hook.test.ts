@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, rmdir, stat, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { root, workspaceDir } from '../src/config.js';
+import { profileDir, root, workspaceDir } from '../src/config.js';
 import { nativeHook, parseHookPayload, recordActiveSession, clearActiveSession, hookErrorLine, hookOutput, hookSkipLine, hostEvents, ACTIVE_SESSION_FILE, activeSessionFile, type HookSkipReason,
-  antigravityCliSurface, antigravityEvents, antigravityOutput, launchSessionsFile, readLaunchSessions, recordLaunchSession } from '../src/hook.js';
+  antigravityCliSurface, antigravityEvents, antigravityOutput, launchSessionsFile, readLaunchSessions, recordLaunchSession, captureDeps, AGY_USER_TURN_PROMPT } from '../src/hook.js';
 const sessionStart = { session_id: 'sess-1', cwd: root };
 const localDir = resolve(root, '.local');
 async function scratchDir(): Promise<string> {
@@ -202,6 +202,96 @@ test('parseHookPayload accepts Codex null values for stop and pre-compact', asyn
 test('parseHookPayload rejects oversized pre-compact custom instructions', async () => {
   await assert.rejects(parseHookPayload('claude-code', 'pre-compact', { ...sessionStart, custom_instructions: 'x'.repeat(20_001) }));
 });
+// Tool events per agent: Claude Code and Codex send the tool fields flat, Antigravity nests the call under toolCall.
+const toolAgents = ['claude-code', 'codex', 'antigravity-cli'] as const;
+const flatToolAgents = ['claude-code', 'codex'] as const;
+type ToolAgent = typeof toolAgents[number];
+// Antigravity has no tool_response, so its optional tool field is toolCall.args. Undefined parts are left out of the payload, so an absent key is tested for real.
+async function toolPayload(agent: ToolAgent, event: 'pre-tool-use' | 'post-tool-use', tool: { name?: unknown; input?: unknown; response?: unknown }, dir: string): Promise<Record<string, unknown>> {
+  const present = (fields: Record<string, unknown>) => Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined));
+  if (agent === 'antigravity-cli') return { ...await agyFixture(event === 'pre-tool-use' ? 'PreToolUse' : 'PostToolUse', dir), toolCall: present({ name: tool.name, args: tool.input }) };
+  return { session_id: 'sess-1', cwd: root, ...present({ tool_name: tool.name, tool_input: tool.input, tool_response: tool.response }) };
+}
+test('parseHookPayload accepts an absent tool_response on pre-tool-use for claude-code and codex', async () => {
+  const dir = await scratchDir();
+  try {
+    for (const agent of flatToolAgents) {
+      const result = await parseHookPayload(agent, 'pre-tool-use', await toolPayload(agent, 'pre-tool-use', { name: 'Bash', input: { command: 'ls' } }, dir));
+      assert.equal(result.tool_name, 'Bash', agent);
+      assert.deepEqual(result.tool_input, { command: 'ls' }, agent);
+      assert.equal('tool_response' in result, false, agent);
+    }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+test('parseHookPayload accepts an absent Antigravity toolCall.args on pre-tool-use and keeps the call name and stepIdx', async () => {
+  const dir = await scratchDir();
+  try {
+    const result = await parseHookPayload('antigravity-cli', 'pre-tool-use', await toolPayload('antigravity-cli', 'pre-tool-use', { name: 'Bash' }, dir));
+    assert.deepEqual(result.toolCall, { name: 'Bash' });
+    assert.equal(result.stepIdx, 2);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+test('parseHookPayload accepts an absent tool_input on pre-tool-use for claude-code and codex', async () => {
+  const dir = await scratchDir();
+  try {
+    for (const agent of flatToolAgents) {
+      const result = await parseHookPayload(agent, 'pre-tool-use', await toolPayload(agent, 'pre-tool-use', { name: 'Bash' }, dir));
+      assert.equal(result.tool_name, 'Bash', agent);
+      assert.equal('tool_input' in result, false, agent);
+    }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+test('parseHookPayload accepts tool_response as an object or a string on post-tool-use, and Antigravity args as an object or a string', async () => {
+  const dir = await scratchDir();
+  try {
+    for (const response of [{ ok: true }, 'ok']) {
+      for (const agent of flatToolAgents) {
+        const result = await parseHookPayload(agent, 'post-tool-use', await toolPayload(agent, 'post-tool-use', { name: 'Bash', input: { command: 'ls' }, response }, dir));
+        assert.deepEqual(result.tool_response, response, agent);
+      }
+    }
+    for (const args of [{ Path: 'note.txt' }, 'note.txt']) {
+      const result = await parseHookPayload('antigravity-cli', 'post-tool-use', await toolPayload('antigravity-cli', 'post-tool-use', { name: 'Bash', input: args }, dir));
+      assert.deepEqual(result.toolCall, { name: 'Bash', args });
+    }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+test('parseHookPayload accepts null tool_input, tool_response and toolCall.args and keeps them null', async () => {
+  const dir = await scratchDir();
+  try {
+    for (const agent of flatToolAgents) {
+      const result = await parseHookPayload(agent, 'post-tool-use', await toolPayload(agent, 'post-tool-use', { name: 'Bash', input: null, response: null }, dir));
+      assert.equal(result.tool_input, null, agent);
+      assert.equal(result.tool_response, null, agent);
+    }
+    const agy = await parseHookPayload('antigravity-cli', 'pre-tool-use', await toolPayload('antigravity-cli', 'pre-tool-use', { name: 'Bash', input: null }, dir));
+    assert.deepEqual(agy.toolCall, { name: 'Bash', args: null });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+test('parseHookPayload still rejects a missing, empty or non-string tool name, a bad session id and a deep payload for every tool agent', async () => {
+  const dir = await scratchDir();
+  try {
+    let nested: unknown = {};
+    for (let i = 0; i < 40; i++) nested = { a: nested };
+    for (const agent of toolAgents) {
+      const field = agent === 'antigravity-cli' ? 'toolCall' : 'tool_name';
+      const idKey = agent === 'antigravity-cli' ? 'conversationId' : 'session_id';
+      const valid = await toolPayload(agent, 'pre-tool-use', { name: 'Bash', input: { command: 'ls' } }, dir);
+      await assert.rejects(parseHookPayload(agent, 'pre-tool-use', await toolPayload(agent, 'pre-tool-use', { input: { command: 'ls' } }, dir)), new RegExp(field), `${agent} missing name`);
+      await assert.rejects(parseHookPayload(agent, 'pre-tool-use', await toolPayload(agent, 'pre-tool-use', { name: '', input: { command: 'ls' } }, dir)), new RegExp(field), `${agent} empty name`);
+      await assert.rejects(parseHookPayload(agent, 'pre-tool-use', await toolPayload(agent, 'pre-tool-use', { name: 42, input: { command: 'ls' } }, dir)), new RegExp(field), `${agent} non-string name`);
+      await assert.rejects(parseHookPayload(agent, 'pre-tool-use', { ...valid, [idKey]: 'bad id!' }), new RegExp(idKey), `${agent} bad id`);
+      await assert.rejects(parseHookPayload(agent, 'pre-tool-use', await toolPayload(agent, 'pre-tool-use', { name: 'Bash', input: nested }, dir)), /nesting too deep/, `${agent} deep`);
+    }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+test('parseHookPayload rejects an Antigravity stepIdx below zero', async () => {
+  const dir = await scratchDir();
+  try {
+    const fixture = await agyFixture('PreToolUse', dir);
+    await assert.rejects(parseHookPayload('antigravity-cli', 'pre-tool-use', { ...fixture, stepIdx: -1 }), /stepIdx/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
 test('hostEvents gives Claude Code all nine events and Codex the seven without subagent events', () => {
   assert.equal(hostEvents['claude-code'].length, 9);
   assert.equal(hostEvents.codex.length, 7);
@@ -389,5 +479,77 @@ test('recordLaunchSession and readLaunchSessions reject bad launch and conversat
     await recordLaunchSession(dir, launch, '../escape');
     await assert.rejects(stat(resolve(dir, 'launch')), /ENOENT/);
     assert.deepEqual(await readLaunchSessions(dir, 'not-hex'), []);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+// Antigravity user turns: the native spawn and profile lookups are stubbed through captureDeps, so the spawn order and failures are observed without a profile.
+const agyStubName = 'hook-unit-agy';
+const agyStubHandoff = JSON.stringify({ injectSteps: [{ ephemeralMessage: 'stub handoff' }] });
+interface NativeCall { event: string; payload: Record<string, unknown> }
+async function withNativeStub(answer: (event: string) => string | Error, run: (calls: NativeCall[]) => Promise<void>): Promise<void> {
+  const saved = { ...captureDeps }, calls: NativeCall[] = [];
+  captureDeps.readConfig = (async () => ({ memory: { enabled: true, port: 1 }, projectRoot: undefined })) as unknown as typeof captureDeps.readConfig;
+  captureDeps.scopeMarker = async () => 'stub-marker';
+  captureDeps.spawn = async (_name, _port, _agent, event, _cwd, payload) => {
+    calls.push({ event, payload });
+    const out = answer(event);
+    if (out instanceof Error) throw out;
+    return out;
+  };
+  try { await run(calls); }
+  finally { Object.assign(captureDeps, saved); await rm(profileDir(agyStubName), { recursive: true, force: true }); }
+}
+test('antigravity session-start with invocationNum 0 emits a content-free user-prompt after the claim, with the same session and cwd', async () => {
+  const dir = await scratchDir();
+  try {
+    const fixture = await agyFixture('PreInvocation-0', dir);
+    await withNativeStub(event => event === 'session-start' ? agyStubHandoff : '', async calls => {
+      const out = await nativeHook(agyStubName, 'antigravity-cli', 'session-start', fixture);
+      assert.deepEqual(calls.map(call => call.event), ['session-start', 'user-prompt']);
+      assert.deepEqual(JSON.parse(out), { injectSteps: [{ ephemeralMessage: 'stub handoff' }] });
+      const [start, prompt] = calls as [NativeCall, NativeCall];
+      assert.equal(prompt.payload.prompt, AGY_USER_TURN_PROMPT);
+      assert.equal(start.payload.prompt, undefined);
+      assert.equal(prompt.payload.session_id, start.payload.session_id);
+      assert.equal(prompt.payload.cwd, start.payload.cwd);
+    });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+// The native engine's looks_like_markup_block (ai_memory_core::scaffolding) excludes a leading markup block from titles and handoffs.
+test('the agy user-turn prompt is a markup block the native scaffolding predicate excludes', () => {
+  assert.match(AGY_USER_TURN_PROMPT, /^<[A-Za-z0-9_\/-]{1,64}>$/);
+});
+test('antigravity session-start with invocationNum above 0 emits no extra user-prompt', async () => {
+  const dir = await scratchDir();
+  try {
+    const fixture = { ...await agyFixture('PreInvocation-0', dir), invocationNum: 3 };
+    await withNativeStub(event => event === 'session-start' ? agyStubHandoff : '', async calls => {
+      await nativeHook(agyStubName, 'antigravity-cli', 'session-start', fixture);
+      assert.deepEqual(calls.map(call => call.event), ['session-start']);
+    });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+test('a failed antigravity user-prompt still returns the session-start handoff and logs the error', async () => {
+  const dir = await scratchDir();
+  try {
+    const fixture = await agyFixture('PreInvocation-0', dir);
+    await withNativeStub(event => event === 'session-start' ? agyStubHandoff : new Error('native user-prompt failed'), async calls => {
+      const out = await nativeHook(agyStubName, 'antigravity-cli', 'session-start', fixture);
+      assert.deepEqual(calls.map(call => call.event), ['session-start', 'user-prompt']);
+      assert.deepEqual(JSON.parse(out), { injectSteps: [{ ephemeralMessage: 'stub handoff' }] });
+      const log = await readFile(resolve(profileDir(agyStubName), 'logs', 'hook-errors.log'), 'utf8');
+      assert.match(log, /event=user-prompt error=native user-prompt failed/);
+    });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+test('antigravity pre-tool-use, post-tool-use and stop never emit a user-prompt, even at invocationNum 0', async () => {
+  const dir = await scratchDir();
+  try {
+    for (const [fixture, event] of [['PreToolUse', 'pre-tool-use'], ['PostToolUse', 'post-tool-use'], ['Stop', 'stop']] as const) {
+      const payload = { ...await agyFixture(fixture, dir), invocationNum: 0 };
+      await withNativeStub(() => '', async calls => {
+        await nativeHook(agyStubName, 'antigravity-cli', event, payload);
+        assert.deepEqual(calls.map(call => call.event), [event], event);
+      });
+    }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

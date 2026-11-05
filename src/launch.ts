@@ -174,6 +174,24 @@ export async function codexProviderArgs(dir = gatewayDir()): Promise<string[]> {
   const port = Number(process.env[spec.portEnv] ?? spec.defaultPort);
   return spec.args(`http://127.0.0.1:${port}`);
 }
+// Starts the suite CLI for a profile in a detached process, so the launcher never waits for its readiness polling.
+// cwd is the suite root, so projectContext resolves the template profile and not the user's project.
+function spawnDetachedStart(name: string): void {
+  const child = spawn(process.execPath, [resolve(root, 'dist/src/cli.js'), '--profile', name, 'start'], { cwd: root, detached: true, windowsHide: true, shell: false, stdio: 'ignore' });
+  child.once('error', () => undefined);
+  child.unref();
+}
+// The template profile's dashboard lists every project, so each launch keeps it up in the background, like the upstream router's /dashboard.
+// The start runs in a detached process so the launcher never waits for it. It never delays or fails the client: any error is ignored and the next launch tries again.
+// JMS_CENTRAL_DASHBOARD=off disables this step for a run (the test suites set it).
+export async function ensureCentralDashboard(template: string, project: string, deps: { running: (name: string) => Promise<boolean>; spawnStart: (name: string) => void; env: NodeJS.ProcessEnv } = { running, spawnStart: spawnDetachedStart, env: process.env }): Promise<void> {
+  if (deps.env.JMS_CENTRAL_DASHBOARD === 'off' || template === project) return;
+  try {
+    if (!(await deps.running(template))) deps.spawnStart(template);
+  } catch {
+    // Ignored by design: a foreign port or a failed spawn must not reach the client.
+  }
+}
 export async function ensureServicesReady(name: string, services: string[]): Promise<void> {
   if (!(await running(name))) await start(name);
   const state = await control(name, 'status');

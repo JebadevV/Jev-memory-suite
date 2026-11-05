@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { gatewayDir } from './install.js';
 import type { HistoryResult } from './gateway-history.js';
 import {
-  chooseLlmPrice, combineMetrics, estimateCost, estimateModelCost, isLlmMissing,
+  chooseLlmPrice, combineMetrics, estimateCost, estimateModelCost, isLlmMissing, modelKey, percentile, safeNumber, statusOf,
   type CostEstimate, type JevPrice, type LlmPrice, type ModelMetrics, type RouteMetrics,
 } from './gateway-metrics.js';
 import { combineCompare, type Compare } from './gateway-views.js';
@@ -18,7 +18,7 @@ export interface UpstreamGateway {
   // False when the env override is set but is not a usable port; the spec default is used instead.
   portValid: boolean; origin: string; dashboardUrl: string;
 }
-export interface GatewayProbe { state: 'running' | 'stopped' | 'unavailable'; pid?: number; upstream?: string }
+export interface GatewayProbe { state: 'running' | 'stopped' | 'unavailable'; pid?: number; upstream?: string; codeAssist?: number }
 interface PortSpec { portEnv: string; defaultPort: number }
 interface ResolvedSpec extends PortSpec { source: 'installed' | 'fallback' }
 
@@ -102,13 +102,18 @@ function safeUpstream(value: unknown): string | undefined {
   } catch { return undefined; }
 }
 
+// Code Assist mode is reported as a small integer; anything else is absent.
+const codeAssistOf = (value: unknown): number | undefined => (typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 99 ? value : undefined);
+
 function healthOf(body: unknown): GatewayProbe {
   if (typeof body !== 'object' || body === null || Array.isArray(body) || (body as { status?: unknown }).status !== 'ok') return { state: 'unavailable' };
-  const { pid, upstream } = body as { pid?: unknown; upstream?: unknown };
+  const { pid, upstream, codeAssist } = body as { pid?: unknown; upstream?: unknown; codeAssist?: unknown };
   const probe: GatewayProbe = { state: 'running' };
   if (typeof pid === 'number' && Number.isInteger(pid) && pid > 0) probe.pid = pid;
   const safe = safeUpstream(upstream);
   if (safe !== undefined) probe.upstream = safe;
+  const mode = codeAssistOf(codeAssist);
+  if (mode !== undefined) probe.codeAssist = mode;
   return probe;
 }
 
@@ -161,6 +166,28 @@ export interface RouterInfo {
 // One model's share of a history: its metrics and its own cost estimate (billing follows the model actually sent).
 export interface ModelEntry { model: string; metrics: RouteMetrics; cost: CostEstimate }
 export interface GatewayModels { history: ModelEntry[] }
+// Antigravity's live state: content-free counts, sums and a short list of safe fields from the gateway's in-memory events.
+export interface AgyRecent {
+  time: string | null; model: string; method: string; status: number | null; durationMs: number | null;
+  input: number; cacheRead: number; output: number; reasoning: number;
+}
+export interface AgyLive {
+  pid: number | null;
+  // Code Assist mode from /health: an integer 1..99, otherwise null.
+  codeAssist: number | null;
+  routing: boolean;
+  startedAt: string | null;
+  // The gateway's events since it started (newest 1000 at most).
+  window: {
+    requests: number; errors: number;
+    statuses: { ok: number; clientError: number; serverError: number; other: number };
+    input: number; cacheRead: number; output: number; reasoning: number;
+    durationMsP50: number | null; durationMsP90: number | null;
+    firstAt: string | null; lastAt: string | null;
+  };
+  // Newest first, at most 15.
+  recent: AgyRecent[];
+}
 export interface GatewayStatus {
   client: UpstreamClient; label: string; port: number; portValid: boolean; state: GatewayProbe['state'];
   metrics: GatewayMetrics; router: RouterInfo | null;
@@ -172,6 +199,8 @@ export interface GatewayStatus {
   experiment: GatewayExperiment;
   // How this client's tokens are paid for (observability.billing). The cost figures are API price estimates either way.
   billing: BillingMode;
+  // Antigravity only (the key is absent for other clients). Null when the gateway is not running or its events were not readable.
+  agyLive?: AgyLive | null;
 }
 export interface PriceInfo { source: string; verifiedAt: string; validUntil?: string }
 export interface GatewaySnapshot {
@@ -247,13 +276,13 @@ async function readCapped(response: Response, maxBytes: number): Promise<string>
 
 const discard = async (response: Response): Promise<void> => { await response.body?.cancel().catch(() => undefined); };
 
-type EventsRead = { metrics: 'ok'; router: RouterInfo } | { metrics: 'auth-required' | 'unavailable' };
+type EventsRead = { metrics: 'ok'; router: RouterInfo; events: unknown[] } | { metrics: 'auth-required' | 'unavailable' };
 
-// Only the router block is kept from the body; the events must be a list, and their contents are not read.
+// The router block is the status data for every client. The events list is passed on, but only Antigravity reads it (see inspectGateway).
 function eventsBodyOf(raw: unknown): EventsRead {
   const router = isRecord(raw) ? routerInfoOf(raw.router) : undefined;
   const events = isRecord(raw) ? raw.events : undefined;
-  return router && Array.isArray(events) ? { metrics: 'ok', router } : { metrics: 'unavailable' };
+  return router && Array.isArray(events) ? { metrics: 'ok', router, events } : { metrics: 'unavailable' };
 }
 
 // Plain GET without credentials: no key, cookie or Authorization is ever sent, and redirects are not followed.
@@ -336,27 +365,92 @@ const probeOf = (gateway: UpstreamGateway): Promise<GatewayProbe> =>
     ? Promise.resolve({ state: 'unavailable' })
     : probeGateway(gateway.origin);
 
+// Antigravity live window. Only counts, sums, validated numbers, a normalized model and a method name leave this block:
+// no path, header, prompt, tool name or other free text is copied.
+const AGY_RECENT_LIMIT = 15, AGY_WINDOW_LIMIT = 1000;
+const V1INTERNAL_METHOD = /^\/v1internal:([A-Za-z]{1,64})$/;
+const amountOf = (value: unknown): number => safeNumber(value) ?? 0;
+const addAmount = (a: number, b: number): number => Math.min(a + b, Number.MAX_SAFE_INTEGER);
+const methodOf = (value: unknown): string => (typeof value === 'string' ? V1INTERNAL_METHOD.exec(value)?.[1] : undefined) ?? 'other';
+
+function agyRecentOf(raw: Record<string, unknown>): AgyRecent {
+  const usage = isRecord(raw.usage) ? raw.usage : {};
+  return {
+    time: isoTimeOf(raw.time), model: modelKey(raw), method: methodOf(raw.path), status: statusOf(raw.status),
+    durationMs: safeNumber(raw.durationMs) ?? null,
+    input: amountOf(usage.input), cacheRead: amountOf(usage.cached), output: amountOf(usage.output), reasoning: amountOf(usage.reasoning),
+  };
+}
+
+// 2xx and 3xx are ok, 4xx client errors, 5xx server errors; a missing, invalid or 1xx status is other.
+function statusBucketOf(status: number | null): keyof AgyLive['window']['statuses'] {
+  if (status === null || status < 200) return 'other';
+  if (status < 400) return 'ok';
+  return status < 500 ? 'clientError' : 'serverError';
+}
+
+function agyWindowOf(records: Record<string, unknown>[]): AgyLive['window'] {
+  const statuses = { ok: 0, clientError: 0, serverError: 0, other: 0 };
+  const sums = { input: 0, cacheRead: 0, output: 0, reasoning: 0 };
+  const durations: number[] = [], instants: number[] = [];
+  let errors = 0;
+  for (const raw of records) {
+    const status = statusOf(raw.status);
+    statuses[statusBucketOf(status)] += 1;
+    // A missing status counts as an error, as does any status of 400 or more.
+    if (status === null || status >= 400) errors += 1;
+    const usage = isRecord(raw.usage) ? raw.usage : {};
+    sums.input = addAmount(sums.input, amountOf(usage.input));
+    sums.cacheRead = addAmount(sums.cacheRead, amountOf(usage.cached));
+    sums.output = addAmount(sums.output, amountOf(usage.output));
+    sums.reasoning = addAmount(sums.reasoning, amountOf(usage.reasoning));
+    const duration = safeNumber(raw.durationMs);
+    if (duration !== undefined) durations.push(duration);
+    const time = isoTimeOf(raw.time);
+    if (time !== null) instants.push(Date.parse(time));
+  }
+  const sorted = [...durations].sort((a, b) => a - b);
+  const first = instants.length > 0 ? Math.min(...instants) : null, last = instants.length > 0 ? Math.max(...instants) : null;
+  return {
+    requests: records.length, errors, statuses, ...sums,
+    durationMsP50: percentile(sorted, 0.5), durationMsP90: percentile(sorted, 0.9),
+    firstAt: first === null ? null : new Date(first).toISOString(),
+    lastAt: last === null ? null : new Date(last).toISOString(),
+  };
+}
+
+// The events are oldest first, so the newest ones are at the end of the list.
+function agyLiveOf(probe: GatewayProbe, router: RouterInfo, events: unknown[]): AgyLive {
+  const records = events.filter(isRecord).slice(-AGY_WINDOW_LIMIT);
+  return {
+    pid: probe.pid ?? null, codeAssist: probe.codeAssist ?? null,
+    routing: router.routing, startedAt: router.startedAt,
+    window: agyWindowOf(records),
+    recent: records.slice(-AGY_RECENT_LIMIT).reverse().map(agyRecentOf),
+  };
+}
+
 async function inspectGateway(gateway: UpstreamGateway, options: GatewaySnapshotOptions, probe?: GatewayProbe): Promise<GatewayPart> {
   const { client, label, port, portValid, origin } = gateway;
   const ctx = contextOf(options);
   const [current, history] = await Promise.all([probe ?? probeOf(gateway), historyOf(options.history?.[client])]);
-  // Events are read only from a running gateway, and only for its router block.
+  // Events are read only from a running gateway. Only its router block is kept, except for Antigravity's window.
   const read = current.state === 'running' ? await eventsOf(origin, options) : undefined;
   const metrics: GatewayMetrics = current.state === 'running' ? (read?.metrics ?? 'unavailable') : (current.state === 'stopped' ? 'offline' : 'unavailable');
   const router = read?.metrics === 'ok' ? read.router : null;
   const historyModels = entriesOf(history?.byModel ?? [], ctx);
-  return {
-    status: {
-      client, label, port, portValid, state: current.state, metrics, router,
-      history: history ? { ...history.metrics, complete: history.complete } : null,
-      historyCompare: history?.compare ?? null,
-      cost: { history: history ? aggregateCost(historyModels, history.metrics, ctx.jev) : null },
-      models: { history: historyModels },
-      experiment: PASSTHROUGH_CLIENTS.includes(client) ? 'passthrough' : (options.experiment?.[client] ?? 'default'),
-      billing: billingOf(options, client),
-    },
-    historyMetrics: history?.metrics ?? null,
+  const status: GatewayStatus = {
+    client, label, port, portValid, state: current.state, metrics, router,
+    history: history ? { ...history.metrics, complete: history.complete } : null,
+    historyCompare: history?.compare ?? null,
+    cost: { history: history ? aggregateCost(historyModels, history.metrics, ctx.jev) : null },
+    models: { history: historyModels },
+    experiment: PASSTHROUGH_CLIENTS.includes(client) ? 'passthrough' : (options.experiment?.[client] ?? 'default'),
+    billing: billingOf(options, client),
   };
+  // Only Antigravity carries the key; the shape of the other clients' statuses is unchanged.
+  if (client === 'agy') status.agyLive = read?.metrics === 'ok' ? agyLiveOf(current, read.router, read.events) : null;
+  return { status, historyMetrics: history?.metrics ?? null };
 }
 
 /** One gateway's status for the dashboard. Probes first; events are read only from a running gateway. */

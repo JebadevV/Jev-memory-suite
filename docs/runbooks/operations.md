@@ -257,7 +257,114 @@ Não há rotação de logs. Se o tamanho crescer demais, pare o perfil e mova o 
 4. Verifique o espaço em `.local/engines/`, porque versões antigas não são apagadas automaticamente.
 5. Revise `.local/client-backups/` periodicamente, porque backups de registro também não são apagados.
 
+### Rollback do zod e do hook
+
+Use se os hooks passarem a falhar com `invalid_type` depois de trocar a versão do zod. O registro da troca de 4.3.6 para 4.6.7 está em `progress.md`, na seção de 2026-10-25. Os hooks carregam `dist/src/hook.js` e `node_modules` a cada chamada, então o rollback não exige reinício de serviço. Os comandos usam o backup `zod-activation-20261025T155037Z` como exemplo; troque pelo nome do backup que for usar.
+
+Na raiz do repositório:
+
+1. Volte o zod para 4.3.6:
+
+```bash
+mv node_modules/zod node_modules/.zod-4.6.7-failed && cp -r .local/backups/zod-activation-20261025T155037Z/zod-4.3.6 node_modules/zod
+```
+
+Se `node_modules/.zod-old-4.3.6` ainda existir, renomeie-o de volta para `node_modules/zod` no lugar da cópia.
+
+2. Restaure `package.json`, `package-lock.json` e `node_modules/.package-lock.json`:
+
+```bash
+cp .local/backups/zod-activation-20261025T155037Z/package.json package.json
+cp .local/backups/zod-activation-20261025T155037Z/package-lock.json package-lock.json
+cp .local/backups/zod-activation-20261025T155037Z/node_modules.package-lock.json node_modules/.package-lock.json
+```
+
+3. Restaure o `dist/` do backup:
+
+```bash
+cp -r .local/backups/zod-activation-20261025T155037Z/dist/. dist/
+```
+
+4. Confirme a versão e os logs:
+
+```bash
+node -p "require('zod/package.json').version"
+```
+
+A saída esperada é `4.3.6`. Depois, confira que `.local/profiles/<perfil>/logs/hook-errors.log` não ganhou linhas novas em uma sessão de teste.
+
+A cópia `node_modules/.zod-old-4.3.6` fica no lugar até a alteração ser commitada.
+
 ## Quando não reiniciar
 
 - Se houver dúvida sobre a origem de um erro, não repita `start` em loop. Leia os logs e o `doctor` antes.
 - Não use `kill` em PIDs. A parada é sempre feita pelo supervisor autenticado; se ele não responder, investigue o processo antes de encerrá-lo.
+
+## Rollback da correção de handoff do AGY e do painel
+
+Use se a correção de 2026-10-25 (`user-prompt` nativo por turno no agy e bloco AGY do painel) causar problema. Registro em `progress.md`, seção de 2026-10-25. O backup é `.local/backups/agy-handoff-20261025T163415Z`, com `dist` e `HEAD`. Ele é anterior à correção, então restaurá-lo remove o `user-prompt` nativo por turno. Há um segundo backup, `.local/backups/agy-marker-20261025T170408Z` (`dist` e `HEAD`), feito antes da troca do texto do turno para `<agy-user-turn/>` em 17:04:11Z. Ele tem a correção, com o texto antigo em inglês.
+
+Na raiz do repositório:
+
+1. Restaure o `dist` do backup. Para voltar à correção com o texto antigo, use `.local/backups/agy-marker-20261025T170408Z` no lugar:
+
+```bash
+cp -r .local/backups/agy-handoff-20261025T163415Z/dist/. dist/
+```
+
+2. Os hooks carregam `dist/src/hook.js` a cada chamada. O rollback do hook vale na próxima chamada do agy, sem reinício. Depois dele, sessões agy sem ferramentas voltam a ser lifecycle-only, e a reentrega de handoff volta a ser possível. Confira:
+
+```bash
+grep -c AGY_USER_TURN_PROMPT dist/src/hook.js
+grep -c "agy-user-turn" dist/src/hook.js
+```
+
+Com o backup `agy-handoff`, a primeira dá `0`. Com o build atual do marcador, `grep -c "agy-user-turn"` dá `1`. Com o backup `agy-marker`, dá `0`, e `grep -c "Antigravity user turn" dist/src/hook.js` dá `1`.
+
+3. O painel só volta ao código anterior depois de reiniciar o perfil com `node bin/jev-memory.mjs restart`. Esse comando para e sobe o supervisor do perfil `default`, que serve o painel. Exige aprovação. Os gateways 8789 e 8794 não são filhos do supervisor e não mudam com ele.
+
+4. O rollback acima restaura só o `dist`. As alterações de `src/` seguem no working tree até serem revertidas ou commitadas.
+
+## Validação real controlada do AGY (preparada)
+
+Status: preparada, não executada. Exige aprovação explícita, porque usa cerca de 2 sessões agy e 4 a 8 gerações Gemini na cota Google normal. Não exige reinício. Registro em `progress.md`, seção de 2026-10-25 "marcador do turno".
+
+Pré-condições:
+
+- `dist` com o marcador: `grep -c "agy-user-turn" dist/src/hook.js` dá `1`.
+- Linha de base: número de linhas de `.local/profiles/default/logs/hook-errors.log`, tamanho de `~/.jev-gateway/agy.log` e `memory_handoff_list` do projeto.
+- Nenhuma outra sessão Claude, Codex ou agy iniciada em `D:\Dev\jev-memory-suite` durante a janela. Uma sessão nova reivindicaria o handoff aberto mais recente.
+
+Passos:
+
+1. Criar o handoff H1 pelo MCP `memory_handoff_begin` (workspace `jev-suite`, projeto `jev-memory-suite`) com uma palavra-código nova, `AGY-HANDOFF-<aleatório>`.
+2. Entrega com ferramenta. Em `D:\Dev\jev-memory-suite`:
+
+```bash
+jev-memory-agy -p "Leia o package.json e diga o campo name. Depois, se houver handoff pendente, diga a palavra-código."
+```
+
+Esperado: saída 0; stderr `Jev gateway: http://127.0.0.1:8794 (passthrough)`; resposta com o campo `name` e a palavra-código.
+
+3. Conferir a sessão S1: H1 `accepted` por `antigravity-cli`, com `accepted_by_session` = S1; auditoria com `accept_handoff` e sem `release_lifecycle_only_handoff` para S1; observações de S1 com session-start, `<agy-user-turn/>` (user-prompt), pre-tool-use, post-tool-use, stop e session-end; o handoff automático H2 de S1 sem `agy-user-turn` em `summary` nem em `open_questions`.
+4. Consumo sem ferramentas, o caminho original do bug:
+
+```bash
+jev-memory-agy -p "Existe handoff pendente? Responda em uma linha."
+```
+
+Esperado: H2 entregue e a palavra-código de H1 não repetida. Depois do finalize, H2 `accepted` por S2 e não reaberto.
+
+5. Conferir o gateway: linhas novas de `~/.jev-gateway/agy.log` todas `passthrough` ou `routing_disabled`, com status 200; zero `codeassist_*`; nenhuma ocorrência de `Bearer`, `ya29.`, `authorization`, `systemInstruction`, `thoughtSignature` nem da palavra-código; `hook-errors.log` sem linhas novas; `/gateways/status` com `agyLive.window.requests` crescendo.
+
+Critérios de aborto: stderr `Jev not used`; qualquer erro de hook; H1 ainda `open` depois da S1; qualquer `release_lifecycle_only_handoff` para S1 ou S2; a palavra-código no log do gateway. Nesses casos, pare, restaure `dist` do backup `agy-marker-20261025T170408Z` (ou `agy-handoff-20261025T163415Z`) e registre o ocorrido.
+
+## Escopo do `jev-memory restart`
+
+Verificado em 2026-10-25 por PID e porta, somente leitura. A lista pode mudar com o tempo; confira de novo antes de executar.
+
+- Para e sobe só o supervisor do perfil `default` (PID 12268; controle 18877; dashboard 18879) e o filho `ai-memory.exe` (PID 35960; servidor de memória 49375).
+- Não muda: gateways 8789 (PID 17504), 8790 (PID 2428, filho do launcher `jev-codex`, PID 37580) e 8794 (PID 30284); o supervisor do perfil `project-b9b5f26bfe6b2ceb49cb` (PID 18892, `ai-memory.exe` 17368); os processos stdio `ai-memory.exe` de sessões Claude e Codex abertas.
+- Efeito: alguns segundos sem a API de memória para o perfil `default`. Os hooks gravam localmente e drenam depois.
+- O comando `start` lê os overrides de porta (`JEV_*_PORT`) do ambiente do shell que o chama. Rode-o a partir de um shell com os mesmos overrides. Hoje nenhum está definido, então valem os padrões.
+- Só depois desse reinício o painel AGY novo aparece na porta 18879. O reinício exige aprovação.

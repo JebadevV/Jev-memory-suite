@@ -878,3 +878,139 @@ test('the aggregator names only claude and codex as peers, never the Antigravity
   const gateways = [upstream('codex', 8790), upstream('claude', 8789), upstream('agy', 8794)];
   assert.equal(aggregatorFor(gateways, { codex: 'running', agy: 'running' })?.url, 'http://localhost:8790/dashboard?peers=8789');
 });
+
+// Antigravity stub: /health answers the given body; /dashboard/events runs the given handler.
+async function agyStub(health: Record<string, unknown>, events: Handler): Promise<{ origin: string; close: () => Promise<void> }> {
+  return fakeGateway((req, res) => {
+    if (req.url?.startsWith('/health')) return answer(health)(req, res);
+    return events(req, res);
+  });
+}
+
+const AGY_HEALTH = { status: 'ok', pid: 30284, upstream: 'https://daily-cloudcode-pa.googleapis.com', jev: 'typesafe', client: 'agy', codeAssist: 2 };
+const AGY_ROUTER = {
+  client: 'agy', upstream: 'https://daily-cloudcode-pa.googleapis.com', routing: false, shadow: false,
+  startedAt: '2026-10-25T09:00:00.000Z', now: '2026-10-25T10:10:00.000Z', recorded: 5,
+};
+// The gateway stamps each event with its own minute; minute 0 is 10:00 UTC on 2026-10-25.
+const atMinute = (minute: number): string => new Date(Date.UTC(2026, 9, 25, 10, minute)).toISOString();
+const tokens = (input: number, output: number, cached: number, reasoning: number) => ({ input, output, cached, cacheWrite: 0, reasoning });
+
+test('agy live status reports the window counts, token sums, percentiles and the newest safe requests', async () => {
+  const events = [
+    { seq: 1, time: atMinute(0), path: '/v1internal:streamGenerateContent', model: 'gemini-3.8-flash-high', tools: 15, mode: 'passthrough', reason: 'routing_disabled', status: 200, durationMs: 100, shadowMode: false, usage: tokens(1000, 10, 800, 5), prompt: 'SECRET PROMPT TEXT', tool: 'run_shell' },
+    { seq: 2, time: atMinute(1), path: '/v1internal:streamGenerateContent', model: 'gemini-3.8-flash-high', tools: 15, mode: 'passthrough', reason: 'routing_disabled', status: 429, durationMs: 300, shadowMode: false, usage: tokens(2000, 20, 1500, 0) },
+    { seq: 3, time: atMinute(2), path: '/v1internal:streamGenerateContent', model: 'gemini-3.8-flash-high', tools: 15, mode: 'passthrough', reason: 'routing_disabled', status: 503, durationMs: 500, shadowMode: false, usage: tokens(3000, 30, 0, 10) },
+    { seq: 4, time: atMinute(3), path: '/v1internal:streamGenerateContent', model: 'gemini-3.8-flash-high', tools: 15, mode: 'passthrough', reason: 'routing_disabled', durationMs: 700, shadowMode: false, usage: tokens(4000, 40, 2000, 15) },
+    { seq: 5, time: atMinute(4), path: '/some/other/path?key=abc', model: 'gemini-3.8-flash-high', tools: 0, mode: 'passthrough', reason: 'routing_disabled', status: 200, durationMs: -1, shadowMode: false, usage: { input: -5, output: 'x', cached: 0, cacheWrite: 0, reasoning: 0 } },
+  ];
+  const stub = await agyStub(AGY_HEALTH, answer({ router: AGY_ROUTER, events }));
+  try {
+    const status = await gatewayStatus(upstream('agy', 0, stub.origin));
+    assert.equal(status.state, 'running');
+    assert.equal(status.metrics, 'ok');
+    const live = status.agyLive;
+    assert.ok(live);
+    assert.deepEqual(Object.keys(live).sort(), ['codeAssist', 'pid', 'recent', 'routing', 'startedAt', 'window']);
+    assert.equal(live.pid, 30284);
+    assert.equal(live.codeAssist, 2);
+    assert.equal(live.routing, false);
+    assert.equal(live.startedAt, '2026-10-25T09:00:00.000Z');
+    assert.deepEqual(live.window, {
+      requests: 5, errors: 3,
+      statuses: { ok: 2, clientError: 1, serverError: 1, other: 1 },
+      input: 10000, cacheRead: 4300, output: 100, reasoning: 30,
+      durationMsP50: 500, durationMsP90: 700,
+      firstAt: atMinute(0), lastAt: atMinute(4),
+    });
+    assert.deepEqual(live.recent.map(entry => entry.time), [atMinute(4), atMinute(3), atMinute(2), atMinute(1), atMinute(0)]);
+    assert.deepEqual(live.recent[0], {
+      time: atMinute(4), model: 'gemini-3.8-flash-high', method: 'other', status: 200, durationMs: null, input: 0, cacheRead: 0, output: 0, reasoning: 0,
+    });
+    assert.deepEqual(live.recent[1], {
+      time: atMinute(3), model: 'gemini-3.8-flash-high', method: 'streamGenerateContent', status: null, durationMs: 700,
+      input: 4000, cacheRead: 2000, output: 40, reasoning: 15,
+    });
+    assert.equal(live.recent[2]?.status, 503);
+    assert.doesNotMatch(JSON.stringify(status), /SECRET PROMPT|run_shell|key=abc|some\/other|Bearer/);
+  } finally { await stub.close(); }
+});
+
+test('agy live recent list is newest first, capped at 15, and a path that is not a Code Assist method reads as other', async () => {
+  const events = Array.from({ length: 20 }, (_, index) => ({
+    seq: index + 1, time: atMinute(index),
+    path: index === 19 ? '/v1/messages' : index === 18 ? '/v1internal:streamGenerateContent?key=abc' : '/v1internal:streamGenerateContent',
+    model: 'gemini-3.8-flash-high', tools: 1, mode: 'passthrough', reason: 'routing_disabled', status: 200, durationMs: 10 + index, usage: tokens(1, 1, 0, 0),
+  }));
+  const stub = await agyStub(AGY_HEALTH, answer({ router: AGY_ROUTER, events }));
+  try {
+    const live = (await gatewayStatus(upstream('agy', 0, stub.origin))).agyLive;
+    assert.ok(live);
+    assert.equal(live.window.requests, 20);
+    assert.equal(live.recent.length, 15);
+    assert.equal(live.recent[0]?.time, atMinute(19));
+    assert.equal(live.recent[0]?.method, 'other');
+    assert.equal(live.recent[1]?.method, 'other');
+    assert.equal(live.recent[2]?.method, 'streamGenerateContent');
+    assert.equal(live.recent[14]?.time, atMinute(5));
+  } finally { await stub.close(); }
+});
+
+test('agy live status is null when the gateway is stopped, auth is required or its events are unreadable', async () => {
+  const stopped = await gatewayStatus(upstream('agy', 0, await refusedOrigin()));
+  assert.equal('agyLive' in stopped, true);
+  assert.equal(stopped.agyLive, null);
+  for (const [health, events] of [
+    [AGY_HEALTH, answer({ events: [] })],
+    [AGY_HEALTH, answer({ error: 'unauthorized' }, 401)],
+  ] as const) {
+    const stub = await agyStub(health, events);
+    try {
+      const status = await gatewayStatus(upstream('agy', 0, stub.origin));
+      assert.notEqual(status.metrics, 'ok');
+      assert.equal(status.agyLive, null);
+    } finally { await stub.close(); }
+  }
+});
+
+test('claude and codex statuses never carry an agyLive key', async () => {
+  const stub = await statusStub(answer(eventsBody()));
+  const stopped = await refusedOrigin();
+  try {
+    assert.equal('agyLive' in (await gatewayStatus(upstream('codex', 0, stub.origin))), false);
+    assert.equal('agyLive' in (await gatewayStatus(upstream('claude', 0, stopped))), false);
+    const snapshot = await gatewaySnapshot([upstream('claude', 8789, stub.origin), upstream('codex', 8790, stopped)]);
+    for (const gateway of snapshot.gateways) assert.equal('agyLive' in gateway, false, gateway.client);
+  } finally { await stub.close(); }
+});
+
+test('agy live codeAssist is null unless /health reports an integer from 1 to 99', async () => {
+  for (const codeAssist of ['2', 0, 1.5, 100, -1, null]) {
+    const stub = await agyStub({ ...AGY_HEALTH, codeAssist }, answer({ router: AGY_ROUTER, events: [] }));
+    try {
+      const live = (await gatewayStatus(upstream('agy', 0, stub.origin))).agyLive;
+      assert.ok(live, JSON.stringify(codeAssist));
+      assert.equal(live.codeAssist, null, JSON.stringify(codeAssist));
+      assert.equal(live.pid, 30284);
+    } finally { await stub.close(); }
+  }
+  for (const codeAssist of [1, 99]) {
+    const stub = await agyStub({ ...AGY_HEALTH, codeAssist }, answer({ router: AGY_ROUTER, events: [] }));
+    try {
+      assert.equal((await gatewayStatus(upstream('agy', 0, stub.origin))).agyLive?.codeAssist, codeAssist);
+    } finally { await stub.close(); }
+  }
+});
+
+test('agy live window is empty and null-valued when the gateway has no events yet', async () => {
+  const stub = await agyStub(AGY_HEALTH, answer({ router: AGY_ROUTER, events: [] }));
+  try {
+    const live = (await gatewayStatus(upstream('agy', 0, stub.origin))).agyLive;
+    assert.deepEqual(live?.window, {
+      requests: 0, errors: 0, statuses: { ok: 0, clientError: 0, serverError: 0, other: 0 },
+      input: 0, cacheRead: 0, output: 0, reasoning: 0,
+      durationMsP50: null, durationMsP90: null, firstAt: null, lastAt: null,
+    });
+    assert.deepEqual(live?.recent, []);
+  } finally { await stub.close(); }
+});

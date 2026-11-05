@@ -5,13 +5,14 @@ import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { createServer as netServer, type AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { configSchema, json, prepare, profileDir, root, type Config } from '../src/config.js';
 import { init, start, stop, running, control } from '../src/lifecycle.js';
 import { atomicJson, baseEnv, sleep, token } from '../src/local.js';
 import { Mcp } from '../src/mcp.js';
-import { planLaunch } from '../src/launch.js';
+import { nativeHook } from '../src/hook.js';
+import { planLaunch, finalizeAgySession } from '../src/launch.js';
 
 // Real processes end to end: supervisor, memory engine, gateway, native hook, mock Jev and a mock upstream.
 type Mode = 'gateway' | 'memory' | 'both' | 'disabled';
@@ -349,6 +350,100 @@ test('memory only: MCP auth, tools, synthetic page, hook capture and persistence
     assert.equal(await refuses(c.gateway.port), true, 'gateway port must refuse when gateway is disabled');
     evidence.gatewayPortRefused = true;
     await writeEvidence('memory', evidence, key);
+  } finally {
+    await removeProfile(name);
+    if (fixture) await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+// Writes go through JSON-RPC: Mcp.call allows only read tools, and a handoff is created by a write.
+async function mcpTool(mcp: Mcp, name: string, args: Record<string, unknown>): Promise<unknown> {
+  const result = await mcp.rpc('tools/call', { name, arguments: args }) as { isError?: boolean; content?: Array<{ type: string; text?: string }> } | undefined;
+  if (!result || result.isError) throw new Error(`${name} returned an error`);
+  const text = (result.content ?? []).filter(item => item.type === 'text').map(item => item.text ?? '').join('\n');
+  try { return JSON.parse(text) as unknown; } catch { return text; }
+}
+// Harness marker stored for each agy user turn (AGY_USER_TURN_PROMPT in src/hook.ts), and the old English text it replaced.
+const AGY_TURN_MARKER = '<agy-user-turn/>';
+const AGY_LEAK_NEEDLES = ['agy-user-turn', 'Antigravity user turn'];
+function agyPayload(dir: string, conversation: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { conversationId: conversation, workspacePaths: [dir], artifactDirectoryPath: join(homedir(), '.gemini', 'antigravity-cli', 'brain', conversation), ...extra };
+}
+// How many user-prompt observations of one conversation carry the agy turn marker as their body or title.
+async function agyTurnMarkers(mcp: Mcp, c: Config, sessionId: string): Promise<number> {
+  const page = await mcpTool(mcp, 'memory_read_session_observations', { workspace: c.workspace, project: c.project, session_id: sessionId, kinds: ['user-prompt'] }) as { observations?: Array<{ body?: string; title?: string }> };
+  return (page.observations ?? []).filter(o => o.body === AGY_TURN_MARKER || o.title === AGY_TURN_MARKER).length;
+}
+const hasLeak = (value: unknown): boolean => AGY_LEAK_NEEDLES.some(needle => JSON.stringify(value).includes(needle));
+// True when any `title` string, at any depth of a result, carries a leak needle.
+function titleLeaks(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(titleLeaks);
+  if (typeof value !== 'object' || value === null) return false;
+  return Object.entries(value).some(([key, v]) => (key === 'title' && typeof v === 'string' && AGY_LEAK_NEEDLES.some(n => v.includes(n))) || titleLeaks(v));
+}
+// Antigravity has no prompt hook; a tool-less session must still count as substantive, so its handoff is claimed once and not re-opened at session end.
+test('memory only: a tool-less Antigravity session consumes its handoff exactly once', { timeout: 240_000 }, async () => {
+  const stamp = String(Date.now()), marker = `AGYHANDOFF${stamp}`, controlMarker = `CONTROLHANDOFF${stamp}`;
+  const { name, config: c } = await createProfile('memory', { memory: true, gateway: false });
+  const scope = { workspace: c.workspace, project: c.project }, otherProject = `${c.project}-control`;
+  let fixture: string | undefined;
+  try {
+    const state = await startProfile(name);
+    assert.equal(state.phase, 'ready');
+    const dir = await createFixture(c);
+    fixture = dir;
+    const mcp = await Mcp.connect(name);
+    await mcpTool(mcp, 'memory_handoff_begin', { ...scope, summary: `E2E tool-less handoff ${marker}.`, open_questions: [], next_steps: ['state the marker'], files_touched: [], shared: true });
+    // Control: a handoff in another project of the same workspace must stay open and must not reach this project.
+    await mcpTool(mcp, 'memory_handoff_begin', { workspace: c.workspace, project: otherProject, summary: `E2E control handoff ${controlMarker}.`, open_questions: [], next_steps: ['none'], files_touched: [], shared: true });
+    const openIn = async (project: string): Promise<string> => JSON.stringify(await mcpTool(mcp, 'memory_handoff_list', { workspace: c.workspace, project }));
+    // Session A: a user turn with no tool calls. The session-start claims the handoff.
+    const sessionA = randomUUID();
+    const startA = await nativeHook(name, 'antigravity-cli', 'session-start', agyPayload(dir, sessionA, { invocationNum: 0 }));
+    assert.ok(startA.includes(marker), 'session A must receive its handoff');
+    // (c) A second user turn of the same conversation, before it ends: nothing is injected.
+    const startA2 = await nativeHook(name, 'antigravity-cli', 'session-start', agyPayload(dir, sessionA, { invocationNum: 0 }));
+    assert.equal(JSON.parse(startA2).injectSteps, undefined, 'a second turn of session A must inject no handoff');
+    assert.equal(startA2.includes(marker), false, 'a second turn of session A must not re-inject the claimed handoff');
+    await nativeHook(name, 'antigravity-cli', 'stop', agyPayload(dir, sessionA, { fullyIdle: true }));
+    await finalizeAgySession(name, c, sessionA, dir);
+    const claimedOnce = await eventually(async () => !(await openIn(c.project)).includes(marker));
+    assert.ok(claimedOnce, 'the claimed handoff was re-opened by a tool-less session end');
+    assert.ok((await openIn(otherProject)).includes(controlMarker), 'a handoff in another project must stay open');
+    // (b) Whatever the engine wrote for session A (the auto handoff, if any) must not carry the marker text in any open handoff, nor a page title.
+    assert.equal(hasLeak(JSON.parse(await openIn(c.project))), false, 'an open handoff for session A must not contain the agy turn marker text');
+    const recent = await mcpTool(mcp, 'memory_recent', { ...scope, limit: 50 });
+    assert.equal(titleLeaks(recent), false, 'no recent page may use the agy turn marker as its title');
+    // Session B: a new user turn must not replay the handoff of session A, nor receive any marker text.
+    const startB = await nativeHook(name, 'antigravity-cli', 'session-start', agyPayload(dir, randomUUID(), { invocationNum: 0 }));
+    assert.equal(startB.includes(marker), false, 'session B must not replay the handoff of session A');
+    assert.equal(startB.includes(controlMarker), false, 'session B must not receive a handoff from another project');
+    assert.equal(hasLeak(startB), false, 'session B must not receive the agy turn marker text');
+    // (a) Hook observations are spooled and drained at session end, so the stored turns are read once A has ended: one marker per user turn (two turns here).
+    assert.ok(await eventually(async () => await agyTurnMarkers(mcp, c, sessionA) === 2), 'session A must store one agy turn marker per user turn');
+  } finally {
+    await removeProfile(name);
+    if (fixture) await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+// Two agy session-starts race for one open handoff: the claim must let exactly one of them inject it.
+test('memory only: concurrent Antigravity session-starts claim one open handoff once', { timeout: 240_000 }, async () => {
+  const stamp = String(Date.now()), marker = `AGYRACE${stamp}`;
+  const { name, config: c } = await createProfile('memory', { memory: true, gateway: false });
+  const scope = { workspace: c.workspace, project: c.project };
+  let fixture: string | undefined;
+  try {
+    const state = await startProfile(name);
+    assert.equal(state.phase, 'ready');
+    const dir = await createFixture(c);
+    fixture = dir;
+    const mcp = await Mcp.connect(name);
+    await mcpTool(mcp, 'memory_handoff_begin', { ...scope, summary: `E2E race handoff ${marker}.`, open_questions: [], next_steps: ['none'], files_touched: [], shared: true });
+    const starts = await Promise.all([randomUUID(), randomUUID()].map(conversation =>
+      nativeHook(name, 'antigravity-cli', 'session-start', agyPayload(dir, conversation, { invocationNum: 0 }))));
+    assert.equal(starts.filter(out => out.includes(marker)).length, 1, 'exactly one concurrent session must receive the single open handoff');
+    assert.equal(JSON.stringify(await mcpTool(mcp, 'memory_handoff_list', scope)).includes(marker), false, 'the claimed handoff must not stay open');
   } finally {
     await removeProfile(name);
     if (fixture) await rm(fixture, { recursive: true, force: true });

@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path';
 import { configSchema, json, profileDir, readConfig, root, type Config } from '../src/config.js';
 import { atomicJson, token, type TokenFile } from '../src/local.js';
 import { init } from '../src/lifecycle.js';
-import { nativeArgv, ownRootRegistration, planLaunch, jevLauncherArgv, jevLauncherPath, codexProviderArgs, loadUpstreamCodexSpec, gatewayLaunchEnv, agyFinalizeArgs, finalizeAgySession, agyDelegation, headroomClaudeSpawn, headroomCodexSpawn, buildCodexHeadroomSpawn, prepareHeadroom, waitForHeadroom, VALIDATED_AGY_VERSIONS, AGY_CODE_ASSIST_VERSIONS, agyVersionOf, agyVersionValidated, agyGatewayPort, parseAgyHealth, agyStartEnv, agyLaunchEnv, agyGatewayRoute, loadAgySpec, agyPidFile, readAgyPid, writeAgyOwner, recoverAgyLaunches, finalizeAgyLaunch, armAgyHangup, pidAlive, AGY_HANGUP_BUDGET_MS, type AgyGatewayRoute, type AgySpec } from '../src/launch.js';
+import { nativeArgv, ownRootRegistration, planLaunch, ensureCentralDashboard, jevLauncherArgv, jevLauncherPath, codexProviderArgs, loadUpstreamCodexSpec, gatewayLaunchEnv, agyFinalizeArgs, finalizeAgySession, agyDelegation, headroomClaudeSpawn, headroomCodexSpawn, buildCodexHeadroomSpawn, prepareHeadroom, waitForHeadroom, VALIDATED_AGY_VERSIONS, AGY_CODE_ASSIST_VERSIONS, agyVersionOf, agyVersionValidated, agyGatewayPort, parseAgyHealth, agyStartEnv, agyLaunchEnv, agyGatewayRoute, loadAgySpec, agyPidFile, readAgyPid, writeAgyOwner, recoverAgyLaunches, finalizeAgyLaunch, armAgyHangup, pidAlive, AGY_HANGUP_BUDGET_MS, type AgyGatewayRoute, type AgySpec } from '../src/launch.js';
 import { delegatedCommand } from '../src/cli-args.js';
 
 // Each test gets a profile whose projectRoot is a fresh directory outside the repository, so the
@@ -1135,4 +1135,51 @@ test('a SIGHUP whose finalize never finishes exits at the budget with 129 when a
 
 test('the hangup budget is about seven seconds', () => {
   assert.equal(AGY_HANGUP_BUDGET_MS, 7_000);
+});
+
+function fakeLifecycle(running: boolean | Error) {
+  const calls: string[] = [];
+  return {
+    calls,
+    deps: {
+      running: async (name: string) => { calls.push(`running:${name}`); if (running instanceof Error) throw running; return running; },
+      spawnStart: (name: string) => { calls.push(`spawnStart:${name}`); },
+      env: {},
+    },
+  };
+}
+
+test('the central dashboard is not ensured when the template and project profiles are the same', async () => {
+  const fake = fakeLifecycle(false);
+  await ensureCentralDashboard('default', 'default', fake.deps);
+  assert.deepEqual(fake.calls, []);
+});
+
+test('the central dashboard profile is not started when it is already running', async () => {
+  const fake = fakeLifecycle(true);
+  await ensureCentralDashboard('default', 'project-abc', fake.deps);
+  assert.deepEqual(fake.calls, ['running:default']);
+});
+
+test('the central dashboard profile is spawned once in the background when it is not running', async () => {
+  const fake = fakeLifecycle(false);
+  await ensureCentralDashboard('default', 'project-abc', fake.deps);
+  assert.deepEqual(fake.calls, ['running:default', 'spawnStart:default']);
+});
+
+test('a failed spawn of the central dashboard profile is swallowed', async () => {
+  const deps = { running: async () => false, spawnStart: () => { throw new Error('spawn failed'); }, env: {} };
+  await assert.doesNotReject(ensureCentralDashboard('default', 'project-abc', deps));
+});
+
+test('JMS_CENTRAL_DASHBOARD=off skips the central dashboard even when the profiles differ', async () => {
+  const fake = fakeLifecycle(false);
+  await ensureCentralDashboard('default', 'project-abc', { ...fake.deps, env: { JMS_CENTRAL_DASHBOARD: 'off' } });
+  assert.deepEqual(fake.calls, []);
+});
+
+test('a foreign port that makes running fail leaves the launch alone and starts nothing', async () => {
+  const fake = fakeLifecycle(new Error('port held by another service'));
+  await assert.doesNotReject(ensureCentralDashboard('default', 'project-abc', fake.deps));
+  assert.deepEqual(fake.calls, ['running:default']);
 });

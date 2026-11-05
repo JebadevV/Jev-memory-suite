@@ -14,6 +14,7 @@ export const dashboardJs = `(function () {
   var SEEN_MAX = 2000;
   var EXCERPT_MAX = 160;
   var KIND_LABELS = { session: 'sessão', decision: 'decisão', gotcha: 'armadilha', procedure: 'procedimento', rule: 'regra' };
+  var AGENT_NAMES = { 'claude-code': 'Claude Code', codex: 'OpenAI Codex', 'antigravity-cli': 'Google Antigravity' };
   var FEED_LABELS = { 'post-tool-use': 'Ferramenta concluída', 'user-prompt': 'Prompt enviado', 'session-start': 'Sessão iniciada', 'session-end': 'Sessão encerrada', 'stop': 'Turno encerrado' };
   var SILENT_KINDS = { 'pre-tool-use': true };
   var UNITS = [['day', 86400], ['hour', 3600], ['minute', 60]];
@@ -58,11 +59,14 @@ export const dashboardJs = `(function () {
     return list.length ? list[0].id : null;
   }
 
+  // The live dot is solid while the panel is current and red only when the page cannot reach the service.
   function renderLive(ok, now) {
     var live = $('live');
+    live.setAttribute('data-tone', ok ? 's-ok' : 's-offline');
     if (ok) { live.textContent = 'ao vivo · atualizado ' + clock(now); return; }
     live.textContent = state.fetchedAt ? 'sem conexão · último dado ' + clock(state.fetchedAt) : 'sem conexão';
   }
+  // The state is shown by its glyph and its text; the tone only sets the glyph's colour (see the stylesheet).
   function renderState(ok, view, now) {
     var card = $('state-card');
     var lastTime = view ? parseTime(view.lastObservationAt) : null;
@@ -73,52 +77,65 @@ export const dashboardJs = `(function () {
       why = ('Última observação ' + ago(view.lastObservationAt, now) + '.').replace(/\\.\\.$/, '.');
       if (now - lastTime < ACTIVE_WINDOW_MS) { kind = 'capturing'; text = 'Capturando'; icon = '●'; }
     }
-    card.className = 'card state-card s-' + kind;
+    card.setAttribute('data-tone', 's-' + kind);
     setText('state-text', text);
     setText('state-icon', icon);
     setText('state-why', why);
+    setText('side-overview-pill', text);
+  }
+  // The sidebar footer repeats the memory state and the memory port, so the drawer on a phone still shows them.
+  function renderSideMemory(view) {
+    var port = view && view.memoryPort ? ' · porta :' + view.memoryPort : '';
+    setText('side-memory', 'AI Memory · ' + $('state-text').textContent + port);
   }
   function renderScope(view) {
     var scope = view && view.scope;
     var label = scope ? scope.workspace + '/' + scope.project : '—';
     setText('scope', view && view.memoryPort ? label + ' · :' + view.memoryPort : label);
   }
+  // Totals use the pt-BR thousands separator (13.463); subs and times keep their plain text.
+  var COUNT_FORMAT = new Intl.NumberFormat('pt-BR');
+  function countText(value) { return typeof value === 'number' && isFinite(value) ? COUNT_FORMAT.format(value) : '—'; }
   function renderPending(view) {
     var pairs = [['m-handoffs', 't-handoffs', view && view.pendingHandoffs], ['m-messages', 't-messages', view && view.pendingMessages]];
     pairs.forEach(function (pair) {
       var count = typeof pair[2] === 'number' ? pair[2] : null;
-      setText(pair[0], dash(count));
+      setText(pair[0], countText(count));
       $(pair[1]).classList.toggle('pending', count !== null && count > 0);
     });
   }
   function renderTiles(view, now) {
     var counts = view ? view.counts : null, activity = view ? view.activity7d : null;
-    setText('m-sessions', dash(counts && counts.sessions));
+    setText('m-sessions', countText(counts && counts.sessions));
     setText('m-sessions-sub', activity ? activity.sessions + ' nos últimos 7 dias' : 'sessões de agente registradas');
-    setText('m-observations', dash(counts && counts.observations));
+    setText('m-observations', countText(counts && counts.observations));
     setText('m-observations-sub', 'eventos capturados pelos hooks' + (activity ? ' · ' + activity.observations + ' em 7 dias' : ''));
-    setText('m-pages', dash(counts && counts.pages));
+    setText('m-pages', countText(counts && counts.pages));
     setText('m-pages-sub', 'conhecimento compilado' + (activity ? ' · ' + activity.pagesUpdated + ' atualizadas em 7 dias' : ''));
     var last = view ? view.lastObservationAt : null;
     setText('m-last', parseTime(last) === null ? '—' : ago(last, now));
     setText('m-last-sub', view ? localDate(last) : 'sem registros');
+    // The explanatory sub lines move to each total's title attribute, so the totals row stays plain.
+    tip('t-sessions', 'm-sessions-sub');
+    tip('t-observations', 'm-observations-sub');
+    tip('t-pages', 'm-pages-sub');
+    tip('t-last', 'm-last-sub');
   }
+  function tip(tileId, subId) { $(tileId).title = $(subId).textContent; }
 
   var recentList = $('recent');
   var slots = [];
+  // One line per row: title (ellipsis), kind badge, relative time. The path goes into the row's title attribute.
   for (var i = 0; i < RECENT_SLOTS; i++) {
     var li = document.createElement('li');
     var row = document.createElement('div'); row.className = 'row';
     var title = document.createElement('span'); title.className = 'title';
-    var when = document.createElement('time'); when.className = 'when';
-    var meta = document.createElement('div'); meta.className = 'meta';
     var badge = document.createElement('span'); badge.className = 'badge';
-    var path = document.createElement('code'); path.className = 'path';
-    row.appendChild(title); row.appendChild(when);
-    meta.appendChild(badge); meta.appendChild(path);
-    li.appendChild(row); li.appendChild(meta); li.hidden = true;
+    var when = document.createElement('time'); when.className = 'when';
+    row.appendChild(title); row.appendChild(badge); row.appendChild(when);
+    li.appendChild(row); li.hidden = true;
     recentList.appendChild(li);
-    slots.push({ li: li, title: title, when: when, badge: badge, path: path });
+    slots.push({ li: li, title: title, when: when, badge: badge });
   }
   function renderRecent(view, now) {
     var items = view && view.recent ? view.recent : [];
@@ -128,12 +145,12 @@ export const dashboardJs = `(function () {
       if (!item) return;
       slot.title.textContent = dash(item.title);
       slot.title.title = dash(item.title);
+      slot.li.title = dash(item.path);
       var relative = ago(item.updatedAt, now);
       slot.when.textContent = relative || '—';
       if (item.updatedAt) slot.when.dateTime = item.updatedAt;
       slot.badge.hidden = !item.kind;
       slot.badge.textContent = KIND_LABELS[item.kind] || dash(item.kind);
-      slot.path.textContent = dash(item.path);
     });
     var empty = $('recent-empty');
     empty.hidden = items.length > 0;
@@ -147,6 +164,7 @@ export const dashboardJs = `(function () {
     renderLive(ok, now);
     renderState(ok, view, now);
     renderScope(view);
+    renderSideMemory(view);
     renderPending(view);
     renderTiles(view, now);
     renderRecent(view, now);
@@ -179,7 +197,7 @@ export const dashboardJs = `(function () {
       dot.setAttribute('aria-hidden', 'true');
       var name = document.createElement('span'); name.className = 'project-name';
       name.textContent = dash(project.label);
-      var status = document.createElement('span'); status.className = 'sr-only';
+      var status = document.createElement('span'); status.className = 'project-state';
       status.textContent = project.online ? 'online' : 'offline';
       tab.appendChild(dot); tab.appendChild(name); tab.appendChild(status);
       tab.addEventListener('click', function () { selectProject(project.id); });
@@ -236,6 +254,56 @@ export const dashboardJs = `(function () {
   loadProjects();
   setInterval(loadProjects, PROJECTS_POLL_MS);
 
+  // Theme: the saved choice goes to <html data-theme>. Without a choice the system preference decides (CSS), and the buttons show it.
+  // Storage can be blocked, so every read and write is guarded; the theme then lasts for the page only.
+  var THEME_KEY = 'jms.dashboard.theme';
+  function readTheme() {
+    try { var saved = window.localStorage.getItem(THEME_KEY); return saved === 'light' || saved === 'dark' ? saved : null; } catch (e) { return null; }
+  }
+  function saveTheme(value) {
+    try { window.localStorage.setItem(THEME_KEY, value); } catch (e) { /* Storage is optional; the theme still applies for this page. */ }
+  }
+  function systemTheme() {
+    try { return typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; } catch (e) { return 'light'; }
+  }
+  function currentTheme() {
+    var root = document.documentElement;
+    var set = root ? root.getAttribute('data-theme') : null;
+    return set === 'light' || set === 'dark' ? set : systemTheme();
+  }
+  function paintTheme() {
+    var value = currentTheme();
+    ['side', 'top'].forEach(function (where) {
+      ['dark', 'light'].forEach(function (name) {
+        $('theme-' + name + '-' + where).setAttribute('aria-pressed', name === value ? 'true' : 'false');
+      });
+    });
+  }
+  function applyTheme(value, save) {
+    var root = document.documentElement;
+    if (root) root.setAttribute('data-theme', value);
+    if (save) saveTheme(value);
+    paintTheme();
+  }
+  ['side', 'top'].forEach(function (where) {
+    ['dark', 'light'].forEach(function (name) {
+      $('theme-' + name + '-' + where).addEventListener('click', function () { applyTheme(name, true); });
+    });
+  });
+  var savedTheme = readTheme();
+  if (savedTheme) applyTheme(savedTheme, false); else paintTheme();
+
+  // The sticky top bar height is measured once and on resize, so the sidebar and the scroll margin of a view clear it.
+  function measureTopbar() {
+    var bar = $('topbar');
+    var height = bar && bar.offsetHeight ? bar.offsetHeight : 0;
+    if (height > 0 && document.documentElement && document.documentElement.style) {
+      document.documentElement.style.setProperty('--topbar-h', height + 'px');
+    }
+  }
+  measureTopbar();
+  if (typeof window.addEventListener === 'function') window.addEventListener('resize', measureTopbar);
+
   // Toasts: a project's first appearance only marks its existing items as seen, so opening the dashboard or bringing a project online never floods the screen.
   var toastRoot = $('toasts');
   var seen = new Set();
@@ -255,7 +323,8 @@ export const dashboardJs = `(function () {
     toast.type = 'button';
     toast.className = 'toast';
     var project = document.createElement('span'); project.className = 'toast-project';
-    project.textContent = dash(item.agentLabel) + ' · ' + dash(item.projectLabel);
+    var agentName = Object.prototype.hasOwnProperty.call(AGENT_NAMES, item.agent) ? AGENT_NAMES[item.agent] : item.agentLabel;
+    project.textContent = dash(agentName) + ' · ' + dash(item.projectLabel);
     var label = document.createElement('span'); label.className = 'toast-label';
     label.textContent = kindLabel(item.kind);
     var title = document.createElement('span'); title.className = 'toast-title';

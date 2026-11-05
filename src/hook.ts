@@ -32,7 +32,8 @@ const common = {
   // Codex sends absent optional fields as JSON null, so nullish (absent or null) is the accepted shape.
   transcript_path: z.string().max(MAX_PATH_CHARS).nullish(), model: z.string().max(MAX_NAME_CHARS).nullish(), permission_mode: z.string().max(64).nullish(), tool_use_id: z.string().max(MAX_NAME_CHARS).nullish()
 };
-const toolFields = { tool_name: z.string().min(1).max(MAX_NAME_CHARS), tool_input: z.unknown(), tool_response: z.unknown() };
+// zod >= 4.6 treats a bare z.unknown() key as required; hosts omit these fields (tool_response is absent from pre-tool-use), so they are optional, as is the Antigravity toolCall.args.
+const toolFields = { tool_name: z.string().min(1).max(MAX_NAME_CHARS), tool_input: z.unknown().optional(), tool_response: z.unknown().optional() };
 // Real Claude Code SubagentStop sends agent_type as an empty string; presence and type are still enforced.
 const subagentFields = { agent_id: sessionId, agent_type: z.string().max(MAX_NAME_CHARS) };
 const stopFields = { stop_hook_active: z.boolean().nullish(), last_assistant_message: z.string().max(MAX_TEXT_CHARS).nullish() };
@@ -56,7 +57,7 @@ const agyCommon = {
   transcriptPath: z.string().max(MAX_PATH_CHARS).nullish(), artifactDirectoryPath: z.string().max(MAX_PATH_CHARS).nullish(), modelName: z.string().max(MAX_NAME_CHARS).nullish()
 };
 const agyToolFields = {
-  toolCall: z.looseObject({ name: z.string().min(1).max(MAX_NAME_CHARS), args: z.unknown() }), stepIdx: z.number().int().min(0), error: z.string().max(MAX_TEXT_CHARS).nullish()
+  toolCall: z.looseObject({ name: z.string().min(1).max(MAX_NAME_CHARS), args: z.unknown().optional() }), stepIdx: z.number().int().min(0), error: z.string().max(MAX_TEXT_CHARS).nullish()
 };
 const agyPayloadSchemas = {
   'session-start': z.looseObject({ ...agyCommon, invocationNum: z.number().int().min(0), initialNumSteps: z.number().int().min(0).nullish() }),
@@ -221,17 +222,28 @@ export function antigravityOutput(event: string, nativeStdout: string): string {
   const result = agyInjectSteps.safeParse(parsed); // Parsing strips any keys beyond injectSteps and ephemeralMessage.
   return result.success ? JSON.stringify(result.data) : '{}';
 }
+// Harness marker, not user text: agy's hook contract has no prompt text. The native engine treats a leading markup block as scaffolding, so it stays out of
+// session titles, handoff summaries and open questions, yet still counts as a user-prompt (substantive) observation; session pages list it under Prompts.
+export const AGY_USER_TURN_PROMPT = '<agy-user-turn/>';
+// Test seam: the profile lookups and native spawn used by captureNative, swappable so unit tests can observe the spawn order.
+export const captureDeps = { readConfig, scopeMarker: projectScopeMarker, spawn: spawnHook };
 async function captureNative(name: string, agent: string, event: string, payload: unknown): Promise<string> {
   hookFields(agent, event, payload); // Reject invalid payloads before looking up any local configuration.
   if (agent === 'antigravity-cli' && !antigravityCliSurface(payload)) { await logHookSkip(name, agent, event, 'non-cli-surface'); return ''; }
-  const c = await readConfig(name); if (!c.memory.enabled) { await logHookSkip(name, agent, event, 'memory-disabled'); return ''; }
+  const c = await captureDeps.readConfig(name); if (!c.memory.enabled) { await logHookSkip(name, agent, event, 'memory-disabled'); return ''; }
   const safePayload = await parseHookPayload(agent, event, payload, c.projectRoot ?? root);
-  if (!(await projectScopeMarker(String(safePayload.cwd), c))) { await logHookSkip(name, agent, event, 'no-scope-marker'); return ''; }
+  if (!(await captureDeps.scopeMarker(String(safePayload.cwd), c))) { await logHookSkip(name, agent, event, 'no-scope-marker'); return ''; }
   await recordActiveSession(profileDir(name), String(safePayload.session_id), agent);
   const launchId = process.env[AGY_LAUNCH_ENV];
   if (agent === 'antigravity-cli' && launchId) await recordLaunchSession(profileDir(name), launchId, String(safePayload.session_id));
   try {
-    return await spawnHook(name, c.memory.port, agent, event, String(safePayload.cwd), safePayload);
+    const stdout = await captureDeps.spawn(name, c.memory.port, agent, event, String(safePayload.cwd), safePayload);
+    // agy has no prompt hook: a tool-less turn would look lifecycle-only and the native engine would re-open the handoff it just claimed.
+    if (agent === 'antigravity-cli' && event === 'session-start' && safePayload.invocationNum === 0) {
+      try { await captureDeps.spawn(name, c.memory.port, agent, 'user-prompt', String(safePayload.cwd), { ...safePayload, prompt: AGY_USER_TURN_PROMPT }); }
+      catch (error) { await logHookError(name, agent, 'user-prompt', error); } // The handoff is already claimed, so its session-start output is kept.
+    }
+    return stdout;
   } finally {
     // Cleared even when the native hook fails, so a session that ended cannot stay on the feed.
     if (event === 'session-end' && isActiveSessionAgent(agent)) await clearActiveSession(profileDir(name), agent, String(safePayload.session_id));

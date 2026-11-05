@@ -143,7 +143,7 @@ function averageOf(total: Total): number | null {
   return total.n === 0 ? null : Math.round(total.sum / total.n);
 }
 
-function percentile(sorted: number[], p: number): number | null {
+export function percentile(sorted: number[], p: number): number | null {
   if (sorted.length === 0) return null;
   return sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] ?? null;
 }
@@ -337,7 +337,7 @@ export function pathOf(value: unknown): string {
 }
 
 // HTTP status codes only; anything else is absent.
-const statusOf = (value: unknown): number | null => (Number.isInteger(value) && (value as number) >= 100 && (value as number) <= 599 ? (value as number) : null);
+export const statusOf = (value: unknown): number | null => (Number.isInteger(value) && (value as number) >= 100 && (value as number) <= 599 ? (value as number) : null);
 
 function decisionOf(raw: Record<string, unknown>): RecentDecision {
   const jev = isRecord(raw.jev) ? raw.jev : {};

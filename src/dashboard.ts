@@ -141,7 +141,7 @@ const GATEWAY_TTL_MS = 5000;
 // Only the aggregator's own loopback origins may be framed; with no aggregator nothing may be.
 const frameSources = (aggregator?: Aggregator): string => (aggregator ? aggregator.origins.join(' ') : "'none'");
 const contentSecurityPolicy = (aggregator?: Aggregator): string =>
-  `default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; frame-src ${frameSources(aggregator)}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
+  `default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'; frame-src ${frameSources(aggregator)}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
 
 // One load at a time. A failed load is answered as an empty snapshot and cached like a success, so a broken check is not retried on every request.
 function cachedSnapshots(load: () => Promise<GatewaySnapshot>): () => Promise<GatewaySnapshot> {

@@ -5,10 +5,11 @@ import { update } from './update.js';
 import { profileName, readConfig } from './config.js';
 import { clients } from './clients.js';
 import { checkMcp } from './mcp.js';
-import { launch, jevLaunch, openDashboard, agyLaunch, agyDelegation, finalizeAgySession, ensureServicesReady, recoverAgyLaunches } from './launch.js';
+import { launch, jevLaunch, openDashboard, agyLaunch, agyDelegation, finalizeAgySession, ensureServicesReady, recoverAgyLaunches, ensureCentralDashboard } from './launch.js';
 import { delegatedCommand } from './cli-args.js';
 import { projectContext } from './projects.js';
 import { runMigrateHistory } from './migrate.js';
+import { autostartStatus, installAutostart, uninstallAutostart } from './autostart.js';
 
 async function printStatus(name: string): Promise<void> {
   const state = await supervisorState(name);
@@ -23,7 +24,9 @@ async function main() {
   const raw = process.argv.slice(2), delegated = delegatedCommand(raw);
   if (delegated) {
     const { values } = parseArgs({ args: delegated.head, allowPositionals: true, options: { profile: { type: 'string', default: 'default' }, dir: { type: 'string', default: '.' } } });
-    const context = await projectContext(profileName.parse(values.profile), values.dir);
+    const template = profileName.parse(values.profile);
+    const context = await projectContext(template, values.dir);
+    if (delegated.rest[0] !== '--stop') void ensureCentralDashboard(template, context.name);
     await jevLaunch(delegated.client, context.name, delegated.rest, context.cwd);
     return;
   }
@@ -31,7 +34,9 @@ async function main() {
   const agy = agyDelegation(raw);
   if (agy) {
     const { values } = parseArgs({ args: agy.head, allowPositionals: true, options: { profile: { type: 'string', default: 'default' }, dir: { type: 'string', default: '.' } } });
-    const context = await projectContext(profileName.parse(values.profile), values.dir);
+    const template = profileName.parse(values.profile);
+    const context = await projectContext(template, values.dir);
+    void ensureCentralDashboard(template, context.name);
     process.exitCode = await agyLaunch(context.name, agy.rest, context.cwd);
     return;
   }
@@ -77,7 +82,14 @@ async function main() {
       break;
     }
     case 'migrate-history': await runMigrateHistory(name, values.from, values.apply, values.project, values.as); break;
-    default: console.log('jev-memory [--profile name] [--dir project-directory] init|install [all|gateway|memory]|gateway-versions|gateway-rollback <id>|start|stop|restart|status|doctor|recover|config <file>|update <engine> <sha>|mcp|dashboard|clients install|remove|check claude|codex|antigravity|desktop [dir]|launch claude|codex -- <args>|codex|claude [args|--dashboard|--status|--stop|--setup]|agy [args]|agy-finalize [--session <id>]|agy-finalize --recover [--legacy]|migrate-history --from <data-dir> [--project <ws>/<projeto>] [--as <ws>/<projeto>] [--apply]  (uses current project; reuses upstream jev-codex/jev-claude + AI Memory)');
+    // Global, not per project: the Run entry starts scripts/autostart.ps1 at logon for every profile.
+    case 'autostart':
+      if (a === 'install') console.log(JSON.stringify(await installAutostart(), null, 2));
+      else if (a === 'uninstall') console.log(JSON.stringify(await uninstallAutostart(), null, 2));
+      else if (a === 'status') console.log(JSON.stringify(await autostartStatus(), null, 2));
+      else throw new Error('autostart requires install, uninstall or status');
+      break;
+    default: console.log('jev-memory [--profile name] [--dir project-directory] init|install [all|gateway|memory]|gateway-versions|gateway-rollback <id>|start|stop|restart|status|doctor|recover|config <file>|update <engine> <sha>|mcp|dashboard|clients install|remove|check claude|codex|antigravity|desktop [dir]|launch claude|codex -- <args>|codex|claude [args|--dashboard|--status|--stop|--setup]|agy [args]|agy-finalize [--session <id>]|agy-finalize --recover [--legacy]|autostart install|uninstall|status|migrate-history --from <data-dir> [--project <ws>/<projeto>] [--as <ws>/<projeto>] [--apply]  (uses current project; reuses upstream jev-codex/jev-claude + AI Memory)');
   }
 }
 main().catch(e => { console.error(e instanceof Error ? e.message : 'Command failed'); process.exitCode = 1; });

@@ -844,3 +844,128 @@ Propósito: registrar a ativação da `53948cb9` só no gateway agy, a correçã
   - card do painel só após `jev-memory restart`;
   - Claude passa para `53948cb9` (ou a próxima) no próximo start;
   - roteamento ativo do AGY segue NO-GO.
+
+## Zod 4.6.7 e hooks: correção, ativação e validação AGY (2026-10-25)
+
+Propósito: registrar a regressão em produção causada pelo zod 4.6.7 nos hooks, a correção em `src/hook.ts`, a ativação em duas etapas sem reinício de serviços e a validação, incluindo duas sessões reais do Antigravity CLI (agy). Público: mantenedores. Data: 2026-10-25.
+
+### A: mudanças
+
+- **Regressão em produção (primeira tentativa, 2026-10-25).** Com o zod 4.6.7 instalado às 14:58:09Z, o zod passou a exigir chaves declaradas como `z.unknown()`. O `pre-tool-use` real do Claude Code e do Codex não tem `tool_response`, então cada hook `pre-tool-use` falhou com `tool_response:invalid_type`, a partir de 14:58:27Z. Rollback para 4.3.6 por volta de 15:08Z. Perdidas 14 observações `pre-tool-use` (10 do perfil `default`, Claude Code; 4 do perfil `project-b9b5f26bfe6b2ceb49cb`, Codex). Não recuperáveis.
+- **Correção (`src/hook.ts`).** `tool_input` e `tool_response` passam a `z.unknown().optional()`; o `toolCall.args` do Antigravity também.
+- **Auditoria.** Só esses três campos eram chaves `z.unknown()` obrigatórias. Não são afetados `z.record(z.string(), z.unknown())` em `clients.ts` e `result: z.unknown().optional()` em `mcp.ts`. Não há uso de `z.undefined`, `.merge`, tuplas, `z.function`, base64, cuid, httpUrl, `.prefault` ou `z.preprocess`, que são as mudanças documentadas no zod 4.4.0.
+- **Testes.** 7 testes novos em `test/hook.test.ts`: campo ausente, presente como objeto e como string, `null`, malformado, agy `args` e `stepIdx`. Fixtures reais sanitizadas em `test/fixtures/hook-payloads/{claude-code,codex}/<evento>.json`, capturadas pelas suítes E2E isoladas com provedores mock (Claude Code 2.1.309 e Codex CLI 0.163.0), e `test/hook-payloads.test.ts` com 15 testes.
+- **Dependência.** `zod` 4.3.6 -> 4.6.7, pin exato. Só `package.json` e `package-lock.json`. O lock muda a entrada `node_modules/zod` e sincroniza os 3 `bin` já existentes no `package.json` (`jev-memory-agy`, `jev-memory-claude` e `jev-memory-codex`).
+- **Ativação em duas etapas, sem reinício de serviços.** Backup em `.local/backups/zod-activation-20261025T155037Z` (`dist`, `zod-4.3.6`, `package.json`, `package-lock.json`, `node_modules.package-lock.json`, `HEAD`). Etapa 1, às 15:50:46Z: `npm run build` com a correção ainda no zod 4.3.6; no `dist` só mudaram `src/hook.js` e `test/hook.test.js`. Etapa 2, às 15:51:24Z: troca por rename no mesmo volume (`node_modules/zod` -> `node_modules/.zod-old-4.3.6`, staging 4.6.7 -> `node_modules/zod`), com janela de cerca de 50 ms.
+
+### B: validação (2026-10-25)
+
+- **Advisory.** GHSA-mrhx-c7xc-m3w5 / CVE-2023-54404 (API pública do GitHub): high, CVSS 7,5 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H), `zod < 4.6.6`, corrigido em 4.6.6. Instalado 4.6.7. `npm audit --omit=dev`: 0 vulnerabilidades (antes, 1 high).
+- **Medição.** `z.array(z.string()).max(16)` com 1.000.000 itens inválidos gerou 1.000.001 issues e +1,1 GB no 4.3.6, e 1 issue no 4.6.7. Arrays sem `.max` continuam gerando um issue por item.
+- **Cópia isolada, zod 4.3.6 com a correção.** `npm test` 595/595.
+- **Cópia isolada, zod 4.6.7 com a correção.** Typecheck e lint ok. `npm test` 610/610 (com o teste das fixtures). `test:e2e` 4/4, `test:projects` 1/1, `test:semantic` 1/1, `test:headroom` 7/7, `test:headroom-codex` 11/11, `test:claude-launch` 7/7, `test:codex-launch` 12/12, E2E de recuperação do agy 2/2.
+- **Os testes pegam a regressão.** Com o `src/hook.ts` do HEAD no zod 4.6.7, 3 testes de `hook.test.ts` e 4 de `hook-payloads.test.ts` falham com `invalid_type`.
+- **Ambiente das cópias.** A suíte recusa junctions, então o binário e os modelos foram copiados. `projects-e2e` resolve `jev-memory-codex` pelo PATH do usuário, então a cópia precisa do próprio `bin` no início do PATH. Numa rodada sem isso, o teste criou 2 perfis reais no workspace e subiu 2 supervisores; foram parados e removidos (`project-6932a3163031448b4043`, `project-06a1e5dda79bc13daec3`).
+- **Ao vivo, workspace (Claude Code desta sessão).** Depois das etapas 1 e 2, observações `pre-tool-use` e `post-tool-use` persistidas (por exemplo, 15:51:27Z e 15:51:32Z). `hook-errors.log` sem linhas novas: 143 no `default` e 260 no `project-b9b5…`, igual ao baseline das 15:12:41Z.
+- **AGY real (aprovado, cota Google, via `jev-memory-agy`, passthrough pelo gateway 8794 `8a497c5a`).**
+  - Sessão 1 (`91baf44b-1278-4fcb-94e5-f5b9f1302685`): 5 `streamGenerateContent` 200 `passthrough`/`routing_disabled`; leitura real de `package.json`; `memory_handoff_begin` pelo MCP; 9 observações (session-start, 3 pares pre/post-tool-use, stop, session-end). Sessão finalizada, e o lançamento antigo `b7f4…` de 2026-10-24 foi recuperado.
+  - Sessão 2 (`ac25592a-5a0f-4e5a-a6ff-ad9ec5f713a2`, sem ferramentas): 2 gerações 200. O handoff `AGY-HANDOFF-18e10afe` foi injetado no session-start e citado pelo modelo. 3 observações (session-start, stop, session-end).
+  - Gateway: 0 linhas `codeassist_*` (404/405/414); 0 ocorrências de `Bearer`, `ya29.`, `authorization`, `systemInstruction`, `thoughtSignature` ou da palavra-código no log. `routing` false.
+- **Sessão real do usuário no `farol-platform`** (passiva, sem custo nosso): 63 gerações 200 `passthrough`/`routing_disabled` pelo gateway v2 desde 15:11Z, 0 métodos desconhecidos.
+- **Painéis e serviços.** No `dist` só o hook mudou. O painel da suíte (18879) e os gateways 8789 e 8794 responderam 200. Nenhum serviço reiniciado (supervisor 12268, Claude 17504, agy 30284).
+
+### C: limites e pendências
+
+- As 14 observações `pre-tool-use` perdidas não foram recuperadas.
+- Handoffs do AGY não ficaram consumidos. Depois da entrega na sessão 2, o handoff com a palavra-código e o handoff automático da sessão 1 continuam `open`, com risco de reentrega na próxima sessão. O replay não foi testado, porque a aprovação cobria 2 sessões. O handoff criado pelo MCP do agy fica com `from_agent: other` e sem `from_session_id`. Resolvido na seção seguinte.
+- `farol-platform`: hooks do Antigravity não registrados (`registered: false`, MCP `conflict`). A sessão do usuário passa pelo Jev, mas o AI Memory não captura. Corrigir exige `jev-memory clients install antigravity` no projeto, com aprovação.
+- Escritas no home real durante as rodadas vieram de apps do usuário: Codex Desktop (`~/.codex/config.toml`) e Antigravity (`~/.gemini/config/import_manifest.json`, plugin `superpowers`, skills em `~/.gemini/config/skills`).
+- Fixtures do agy não são reais: não houve captura de payload bruto do agy.
+- Arrays sem `.max` seguem expostos ao custo O(n) de issues, mesmo no 4.6.7. As entradas são locais.
+- Rollback: procedimento em [rollback do zod e do hook](docs/runbooks/operations.md#rollback-do-zod-e-do-hook). A cópia `node_modules/.zod-old-4.3.6` fica até a alteração ser commitada.
+
+## AI Memory e Antigravity: consumo de handoff e painel AGY (2026-10-25)
+
+Propósito: registrar a causa raiz de handoffs entregues ao agy que ficavam `open` e eram reentregues, a correção no hook (um `user-prompt` nativo por turno), o painel AGY que mostrava "Indisponível" e foi redesenhado, a ativação sem reinício de serviços e a validação. Público: mantenedores. Data: 2026-10-25. Decisões: [ADR 0012](docs/architecture/adr/0012-antigravity-cli-integration.md) (acréscimo de 2026-10-25) e [ADR 0011](docs/architecture/adr/0011-native-dashboard-and-token-observability.md) (acréscimo de 2026-10-25).
+
+### A: mudanças
+
+- **Causa raiz do handoff do agy.** Handoffs entregues ao agy ficavam `open` e eram reentregues. No audit log do perfil `default`, a sessão AGY 2 (`ac25592a-…`) fez `accept_handoff` às 15:52:59.697Z, e o motor fez `release_lifecycle_only_handoff` às 15:53:06.193Z, no session-end. O handoff da palavra-código (`01a173c3-4d0f-…`, `from_agent: other`, `cwd` e `from_session_id` nulos, criado pelo MCP estático do agy) foi aceito por uma sessão do Claude Code às 16:05:22Z (replay entre agentes). Uma sessão do Claude também aceitou às 16:05:02Z e liberou às 16:05:19Z; esse comportamento de `/clear` é por design.
+- **Semântica nativa (upstream ai-memory 3.1.2).** O GET `/handoff` do session-start reivindica o handoff uma única vez (dois guards `state='open'`). No session-end, uma sessão sem observação substantiva (`kind IN ('user-prompt','pre-tool-use','post-tool-use')`, `SUBSTANTIVE_OBSERVATION_KIND_SQL`) devolve ao pool o handoff que reivindicou (`end_lifecycle_only_session_in_tx` em `crates/ai-memory-store/src/ops.rs`). O upstream mapeia para o agy só `PreInvocation` (session-start), `PreToolUse`, `PostToolUse` e `Stop`. Não há evento de prompt.
+- **Causa.** Toda sessão agy sem ferramentas era lifecycle-only, embora o `PreInvocation` com `invocationNum === 0` só dispare depois que o usuário envia um prompt. Esse prompt não virava observação.
+- **Correção (`src/hook.ts`, `captureNative`).** Para `antigravity-cli`, `session-start` com `invocationNum === 0`, depois do spawn nativo de session-start (cuja saída carrega o handoff), o hook faz um segundo spawn nativo `user-prompt` com o texto fixo `AGY_USER_TURN_PROMPT` ("Antigravity user turn (the agy hook contract does not expose the prompt text)", substituído por `<agy-user-turn/>` na seção seguinte). Não há conteúdo do prompt. Falha desse spawn vai para `hook-errors.log` e não perde a saída do session-start. Para o agy, esse `user-prompt` não busca handoff (só KimiCode faz) e não injeta contexto (só Claude e Codex). Emite um por turno do usuário; `invocationNum > 0` não emite. Seam de teste: `captureDeps`.
+- **Efeito colateral documentado.** Sessões agy sem ferramentas passam a gerar página de resumo e handoff automático, como Claude e Codex. O texto fixo aparece como prompt nessas sessões.
+- **Painel AGY: causa do "Indisponível".** `applyGateways` em `src/dashboard-gateway-script.ts` montava `gwData.gateways = { claude, codex }` e descartava o agy, então o card recebia sempre `null`. O contador do combinado também subcontava.
+- **Backend (`src/gateways.ts`).** Campo `agyLive` só na entrada do agy: `pid`, `codeAssist`, `routing`, `startedAt` e `window` (requests, errors, statuses, tokens, p50, p90, firstAt, lastAt), além de `recent` com até 15 itens (`model`, `method`, `status`, `durationMs`, tokens). Não há conteúdo de prompt. Usa o mesmo GET de `/dashboard/events` e `/health`, sem chamadas novas. Claude e Codex não ganham o campo. `healthOf` guarda `codeAssist` (1..99). `src/gateway-metrics.ts` exporta `percentile` e `statusOf` (aditivo). A janela inclui eventos anteriores ao `startedAt`, porque o gateway recarrega o log; por isso o painel diz "janela recente".
+- **Frontend: painel AGY dedicado.** `#obs-agy` fica entre Codex e Combinado e é mais largo. Tem cabeçalho com estado; fatos (modo passthrough com roteamento travado, contrato Code Assist, PID, ativo há, host do upstream, cobrança); 6 KPIs (requisições; tokens de entrada com % de cache; saída com raciocínio; latência p50/p90; erros da janela com 4xx/5xx; última requisição); modelos do histórico com barra de participação; atividade recente (até 15); rodapé com períodos. Saíram do AGY: métricas do Jev, custo, cache de escrita, experimento, comparação com e sem Jev e a tabela de modelos com `min-width: 720px`. Claude, Codex, Combinado e o iframe original não mudaram. O CSS só acrescenta classes `agy-*`.
+- **Testes.** Quatro unitários em `test/hook.test.ts`. E2E com motor real em `test/e2e.ts`: "memory only: a tool-less Antigravity session consumes its handoff exactly once". A sessão A recebe o handoff por `injectSteps`, passa por stop e `finalizeAgySession`, e o handoff não fica `open`. A sessão B não recebe replay. Um handoff de outro projeto continua `open` (isolamento).
+- **Ativação sem reinício.** Backup em `.local/backups/agy-handoff-20261025T163415Z` (`dist`, `HEAD`). `npm run build` às 16:34:18Z. Os hooks executam `dist/src/hook.js` a cada chamada, então a correção vale desde então. Nenhum serviço foi reiniciado.
+
+### B: validação (2026-10-25)
+
+- **O teste morde.** Com a emissão do `user-prompt` desligada, o E2E falha em "the claimed handoff was re-opened by a tool-less session end".
+- **Regressão em série, depois do build.** Typecheck e lint ok. `npm test` 625/625. Na primeira rodada, o verificador de isolamento acusou crescimento de `~/.jev-gateway/codex.log` por tráfego real do usuário às 16:34:29Z (`gpt-6.1-sol`, upstream ChatGPT real); a rodada repetida passou limpa. Também: `test:e2e` 5/5; `test:projects` 1/1; `test:semantic` 1/1; `test:headroom` 7/7; `test:headroom-codex` 11/11; `test:claude-launch` 7/7; `test:codex-launch` 12/12; E2E de recuperação do agy 2/2; `npm audit --omit=dev` 0 vulnerabilidades.
+- **Ao vivo, Claude Code.** Depois do build, capturas normais e 0 erros novos em `hook-errors.log`.
+- **Não validado ao vivo com agy real.** Isso exige sessão agy aprovada e cota Google.
+- **Painel AGY, causa e redesenho.** Verificados com dados reais via `gatewaySnapshot`, em harness fora do repositório, sem build nem restart. A regressão do painel é a mesma rodada de `npm test` acima. Capturas:
+  - `C:\Users\LuneZz\AppData\Local\Temp\claude\D--Dev-jev-memory-suite\85fd4633-9f2a-49b6-8166-0b300f6c5cc8\scratchpad\agy-full-1280-dark.png`
+  - `C:\Users\LuneZz\AppData\Local\Temp\claude\D--Dev-jev-memory-suite\85fd4633-9f2a-49b6-8166-0b300f6c5cc8\scratchpad\agy-full-1280-light.png`
+  - `C:\Users\LuneZz\AppData\Local\Temp\claude\D--Dev-jev-memory-suite\85fd4633-9f2a-49b6-8166-0b300f6c5cc8\scratchpad\agy-full-390-dark.png`
+  - `C:\Users\LuneZz\AppData\Local\Temp\claude\D--Dev-jev-memory-suite\85fd4633-9f2a-49b6-8166-0b300f6c5cc8\scratchpad\agy-full-390-light.png`
+  - Em 390 px, `scrollWidth` = 390 = `clientWidth`, sem rolagem horizontal.
+  - Dados ao vivo nessa captura: 209 requisições, 95% de cache, p50 9,9 s, 0 erros, contrato v2, routing false.
+- **Painel vivo.** A porta 18879 só mostra a mudança depois de `jev-memory restart`, que não foi executado (exige aprovação).
+
+### C: limites e pendências
+
+- Validar ao vivo com uma sessão agy real (exige aprovação e cota Google).
+- `jev-memory restart` para o painel novo (exige aprovação).
+- Handoffs antigos `open` do Claude de 21 a 25/10 continuam no pool. São dados do usuário e não foram alterados.
+- `farol-platform` segue sem hooks do Antigravity registrados (pendência anterior).
+- O verificador de isolamento do `npm test` acusa falso positivo quando o gateway Codex real recebe tráfego durante a rodada. Só `claude.log` e `agy.log` são tolerados.
+- Efeito colateral: sessões agy sem ferramentas agora geram página de resumo e handoff automático (ver Correção acima).
+- Rollback: [restaurar o dist do backup](docs/runbooks/operations.md#rollback-da-correção-de-handoff-do-agy-e-do-painel). Os hooks voltam ao código anterior na próxima chamada; o painel só volta depois de `jev-memory restart`.
+
+## Finalização AGY + Jev Gateway + AI Memory: marcador do turno, verificação e prontidão (2026-10-25)
+
+Propósito: registrar a troca do texto sintético do turno do agy por um marcador de scaffolding, que não contamina resumos, perguntas em aberto nem títulos de handoff; a verificação dessa troca (E2E com motor real, regressão, segurança); e o que falta para a validação com agy real e para o reinício do painel. Público: mantenedores. Data: 2026-10-25 (builds às 16:34:18Z e 17:04:11Z). Decisões: [ADR 0012](docs/architecture/adr/0012-antigravity-cli-integration.md) (sub-nota de 2026-10-25) e [operação](docs/runbooks/operations.md#validação-real-controlada-do-agy-preparada).
+
+### A: mudanças
+
+- **Marcador do turno (`src/hook.ts`, `AGY_USER_TURN_PROMPT`).** O texto sintético passou de `Antigravity user turn (the agy hook contract does not expose the prompt text)` para `<agy-user-turn/>`. Motivo: o texto em inglês seria gravado como prompt real e aparecia em resumos de handoff automático, em perguntas em aberto e em títulos. O marcador segue o predicado nativo `looks_like_markup_block` (ai-memory-core, `scaffolding.rs`), o mesmo tratamento dado ao `<task-notification>` do Claude. `handoff_prompt` e `question_prompt` (ai-memory-hooks, `synth.rs`) pulam o prompt, e a checagem de título rejeita o texto via `looks_like_scaffolding`. A observação continua `user-prompt`, então a sessão segue substantiva e o handoff reivindicado não é reaberto. Observação gravada: `{"kind":"user-prompt","title":"<agy-user-turn/>","body":"<agy-user-turn/>"}`, uma por turno.
+- **Prova de que a troca morde (E2E).** Com o texto antigo, o handoff automático saiu com `summary: "Single-prompt session; the prompt is quoted under open questions."` e `open_questions: ["Continue from: Antigravity user turn (...)"]`. Com o marcador: `summary: "Session ended; 5 observations recorded."` e `open_questions: []`.
+- **Contaminação real: nenhuma.** Leitura somente das bases SQLite de todos os perfis: 0 observações, handoffs ou páginas de sessões agy com o texto antigo. As 7 ocorrências no perfil `default` são observações `post-tool-use` da sessão do Claude Code que coordenou a mudança, com saídas de ferramenta citando a constante. Não houve sessão agy real entre o primeiro build (16:34:18Z) e o build do marcador.
+- **Testes novos.** `test/hook.test.ts`: a constante casa com o formato do predicado nativo, `/^<[A-Za-z0-9_\/-]{1,64}>$/`. `test/e2e.ts` (motor real): (a) marcador gravado por turno; (b) nenhuma contaminação em handoffs abertos, na saída de session-start da sessão seguinte e nos títulos de `memory_recent`; (c) o segundo turno da mesma conversa não recebe injeção de handoff; (d) concorrência: dois session-starts simultâneos com um handoff aberto, exatamente um recebe e depois ele não fica `open`; (e) sem replay, e handoff de outro projeto continua `open`. Observação: as observações `user-prompt` do agy são drenadas do spool do hook no session-end, então as leituras do E2E ocorrem depois do finalize. `test/dashboard-agy.test.ts` (novo, 12 testes): executa o `/app.js` real em `node:vm`, com DOM falso montado a partir de `dashboardHtml(null)`. Cobre: Carregando, Em execução (s-ok), em execução sem métricas (s-warn), Parado, Indisponível, Exige chave, resposta sem entrada do agy, dado obsoleto depois de falha de poll (duas variantes), `agy-kpi-warn`, contador combinado "3 de 3" e "2 de 3", e XSS no nome do modelo mantido como `textContent` (o setter de `innerHTML` lança).
+- **Ativação sem reinício.** Backup em `.local/backups/agy-marker-20261025T170408Z` (`dist` e `HEAD`). `npm run build` às 17:04:11Z. `dist/src/hook.js` contém `agy-user-turn` (1 ocorrência) e nenhuma `Antigravity user turn`. Nenhum serviço foi reiniciado; o hook carrega `dist` a cada chamada.
+
+### B: validação (2026-10-25, depois do build do marcador, em série)
+
+- Typecheck e lint ok.
+- `npm test`: 638/638, verificador de isolamento limpo.
+- `test:e2e` 6/6; `test:projects` 1/1; `test:semantic` 1/1; `test:headroom` 7/7; `test:headroom-codex` 11/11; `test:claude-launch` 7/7; `test:codex-launch` 12/12; E2E de recuperação do agy 2/2.
+- `npm audit --omit=dev`: 0 vulnerabilidades. zod 4.6.7 sem alteração.
+- `hook-errors.log`: nenhuma linha nova em nenhum perfil desde 16:34:18Z.
+- Varredura de segurança no diff e nos arquivos novos, por padrões de token (`ya29.`, `sk-`, `ghp_`, `AIza`, `Bearer`, `aim_`, chaves privadas): nenhum achado. Nos fontes do painel e do gateway, nenhum `innerHTML`, `eval` ou `new Function`.
+- Escopo do `jev-memory restart` verificado por PID e porta, somente leitura (ver C).
+
+### C: validação real controlada do agy (preparada, não executada)
+
+Exige aprovação explícita: cerca de 2 sessões agy e 4 a 8 gerações Gemini na cota Google normal. Não exige reinício.
+
+1. Pré-condições: `dist` com o marcador; linha de base (linhas de `hook-errors.log`, tamanho de `~/.jev-gateway/agy.log`, `memory_handoff_list`); nenhuma outra sessão Claude, Codex ou agy iniciada em `D:\Dev\jev-memory-suite` durante a janela, porque ela reivindicaria o handoff aberto mais recente.
+2. Criar o handoff H1 pelo MCP `memory_handoff_begin` (workspace `jev-suite`, projeto `jev-memory-suite`) com a palavra-código nova `AGY-HANDOFF-<aleatório>`.
+3. Entrega com ferramenta: em `D:\Dev\jev-memory-suite`, `jev-memory-agy -p "Leia o package.json e diga o campo name. Depois, se houver handoff pendente, diga a palavra-código."`. Esperado: saída 0, stderr `Jev gateway: http://127.0.0.1:8794 (passthrough)`, resposta com o nome e a palavra-código.
+4. Conferir: H1 `accepted` por `antigravity-cli`, com `accepted_by_session` = S1; auditoria com `accept_handoff` e sem `release_lifecycle_only_handoff` para S1; observações de S1: session-start, `<agy-user-turn/>` (user-prompt), pre-tool-use, post-tool-use, stop e session-end; o handoff automático H2 da S1 sem `agy-user-turn` em summary e open_questions.
+5. Consumo sem ferramentas (o caminho original do bug): `jev-memory-agy -p "Existe handoff pendente? Responda em uma linha."`. Esperado: H2 entregue e a palavra-código de H1 não repetida. Depois do finalize, H2 `accepted` por S2 e não reaberto.
+6. Gateway: linhas novas de `agy.log` todas `passthrough` ou `routing_disabled`, com status 200; zero `codeassist_*`; sem `Bearer`, `ya29.`, `authorization`, `systemInstruction`, `thoughtSignature` nem a palavra-código no log; `hook-errors.log` sem linhas novas; `/gateways/status` com `agyLive.window.requests` crescendo.
+7. Aborto: stderr `Jev not used`, qualquer erro de hook, H1 ainda `open` depois da S1, qualquer `release_lifecycle_only_handoff` para S1 ou S2, ou a palavra-código no log do gateway. Ação: parar e restaurar `dist` de `.local/backups/agy-marker-20261025T170408Z` (ou de `agy-handoff-20261025T163415Z`).
+
+### D: limites e pendências
+
+- Validação real com agy: pendente de aprovação (C).
+- `jev-memory restart` para o painel AGY novo: pendente de aprovação. Até lá, a porta 18879 serve o painel anterior.
+- Resíduo do marcador: a lista `## Prompts` da página de sessão imprime o título bruto da observação, então `<agy-user-turn/>` pode aparecer ali. Os tokens `agy`, `user` e `turn` entram no FTS de observações.
+- Handoffs abertos do Claude de 21 a 25/10 seguem no pool. São dados do usuário e não foram alterados.
+- `farol-platform` segue sem hooks do Antigravity registrados.
+- O campo `pid` em `agyLive` fica exposto só em `127.0.0.1`.
+- O verificador de isolamento do `npm test` acusa falso positivo quando o gateway Codex recebe tráfego real durante a rodada. Nesta rodada ficou limpo.

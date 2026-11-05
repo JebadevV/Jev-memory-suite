@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-24T20:00:00.000Z",
+  "updatedAt": "2026-10-25T17:20:00.000Z",
   "checks": [
     {
       "id": "M0-executor",
@@ -953,6 +953,46 @@
       "command": "npm test; test:claude-launch; test:codex-launch; test:headroom; test:headroom-codex; test:semantic; Jev com o patch (vitest, incluindo agy: routing switch); applyGatewayPatches em copias LF e CRLF; sondas locais 404/405/414 no 8794; avaliacao isolada de zod 4.6.7",
       "observed": "Ativacao 53948cb9 so no gateway agy: PID 24060 -> 4980, /health com codeAssist 2. Regressao pos-commit: npm test 588/588 sem skips, 50.217 sentinelas inalteradas; test:claude-launch 7/7; test:codex-launch 12/12; test:headroom 7/7; test:headroom-codex 11/11; test:semantic 1/1. Jev com o patch: 578 testes, 576 passam (2 falhas pre-existentes do Windows: opencode-coverage x1, setup 0600 x1); Code Assist e health 190/190. Patch: 26 arquivos, 2.586 linhas, 0 CR. applyGatewayPatches em copias LF e CRLF ok. Sondas locais 404/405/414 ok. Zod 4.6.7 avaliado isoladamente: npm audit --omit=dev com 0 vulnerabilidades, sem aplicar. O gateway agy em execucao ainda precisa de jev-memory install gateway e reinicio para o 403.",
       "evidence": "progress.md, secao Antigravity: endurecimento do Gateway v2 (2026-10-24)"
+    },
+    {
+      "id": "M-zod-1",
+      "scope": "Zod 4.6.7 (GHSA-mrhx-c7xc-m3w5): campos opcionais dos hooks, fixtures reais, ativacao em duas etapas e validacao AGY real",
+      "status": "passed",
+      "command": "npm test; test:e2e; test:projects; test:semantic; test:headroom; test:headroom-codex; test:claude-launch; test:codex-launch; E2E de recuperacao do agy; typecheck e lint; test/hook-payloads.test.ts (fixtures reais); verificacoes ao vivo no workspace (hook-errors.log); duas sessoes AGY reais via jev-memory-agy",
+      "observed": "Regressao em producao com zod 4.6.7 (primeira tentativa): pre-tool-use falhou com tool_response:invalid_type, 14 observacoes perdidas e nao recuperadas, rollback para 4.3.6. Correcao em src/hook.ts (tool_input, tool_response e toolCall.args como z.unknown().optional()). Copia isolada: npm test 595/595 com 4.3.6 e 610/610 com 4.6.7 (typecheck e lint ok); test:e2e 4/4, test:projects 1/1, test:semantic 1/1, test:headroom 7/7, test:headroom-codex 11/11, test:claude-launch 7/7, test:codex-launch 12/12, recuperacao agy 2/2; HEAD com zod 4.6.7 faz 3 + 4 testes falharem com invalid_type. npm audit --omit=dev: 0 vulnerabilidades (antes 1 high). Ativacao sem reinicio: hook-errors.log sem linhas novas (143 default, 260 project-b9b5). AGY real: sessao 1 com 9 observacoes e lancamento antigo recuperado; sessao 2 com handoff injetado e citado; gateway com 0 codeassist_* e 0 vazamentos de token; farol-platform com 63 geracoes 200. Pendencias: handoffs do AGY seguem open apos a entrega (risco de reentrega), farol-platform sem hooks do Antigravity registrados.",
+      "evidence": "progress.md, secao Zod 4.6.7 e hooks: correcao, ativacao e validacao AGY (2026-10-25)"
+    },
+    {
+      "id": "M-agy-handoff-1",
+      "scope": "AI Memory e Antigravity: consumo de handoff por sessao agy sem ferramentas (user-prompt nativo por turno), E2E com motor real e prova de que morde",
+      "status": "passed",
+      "command": "npm run build; typecheck; lint; npm test; test:e2e; test:projects; test:semantic; test:headroom; test:headroom-codex; test:claude-launch; test:codex-launch; E2E de recuperacao do agy; npm audit --omit=dev; verificacao de que o teste morde (emissao do user-prompt desligada)",
+      "observed": "Causa raiz: sessao agy sem ferramentas era lifecycle-only (sem observacao substantiva), e o session-end devolvia ao pool o handoff reivindicado; o PreInvocation com invocationNum 0 so dispara apos o prompt do usuario. Correcao em src/hook.ts (captureNative): segundo spawn nativo user-prompt com texto fixo AGY_USER_TURN_PROMPT, sem conteudo do prompt, depois do session-start com invocationNum 0. Testes: 4 unitarios em test/hook.test.ts e E2E com motor real (sessao A consome o handoff, sessao B nao recebe replay, handoff de outro projeto continua open). Prova: com a emissao desligada o E2E falha em 'the claimed handoff was re-opened by a tool-less session end'. Regressao: typecheck e lint ok; npm test 625/625 (uma rodada teve falso positivo do verificador de isolamento por trafego real do Codex as 16:34:29Z; repetida limpa); test:e2e 5/5; test:projects 1/1; test:semantic 1/1; test:headroom 7/7; test:headroom-codex 11/11; test:claude-launch 7/7; test:codex-launch 12/12; recuperacao agy 2/2; npm audit --omit=dev 0 vulnerabilidades. Build em 16:34:18Z; hooks carregam dist a cada chamada, sem reinicio de servico. Nao validado ao vivo com agy real (exige sessao aprovada e cota Google).",
+      "evidence": "progress.md, secao AI Memory e Antigravity: consumo de handoff e painel AGY (2026-10-25)"
+    },
+    {
+      "id": "M-agy-obs-1",
+      "scope": "Painel AGY: causa do Indisponivel (agy descartado em applyGateways), bloco agyLive em /gateways/status, redesenho do card e evidencia visual",
+      "status": "passed",
+      "command": "typecheck; lint; npm test (mesma rodada do M-agy-handoff-1); captura visual com gatewaySnapshot em 1280 e 390 px, dark e light (harness fora do repositorio)",
+      "observed": "Causa do Indisponivel: applyGateways em src/dashboard-gateway-script.ts montava gateways = { claude, codex } e descartava o agy, entao o card recebia null; o contador do combinado tambem subcontava. Backend: campo agyLive so na entrada do agy (pid, codeAssist, routing, startedAt, window, recent ate 15), sem conteudo de prompt e sem chamadas novas (mesmos GET de /dashboard/events e /health); gateway-metrics.ts exporta percentile e statusOf (aditivo). Frontend: painel dedicado #obs-agy entre Codex e Combinado, com cabecalho, fatos, 6 KPIs, modelos e atividade recente; saiu custo, comparacao com e sem Jev, cache de escrita, experimento e tabela com min-width 720px; Claude, Codex, Combinado e iframe sem mudanca; CSS so classes agy-*. Evidencia visual com dados reais (gatewaySnapshot, harness fora do repo, sem build nem restart): em 390 px scrollWidth 390 = clientWidth; ao vivo 209 requisicoes, 95% de cache, p50 9,9 s, 0 erros, contrato v2, routing false. Regressao: mesma rodada de npm test do M-agy-handoff-1. Painel vivo (18879) so muda depois de jev-memory restart, nao executado (exige aprovacao).",
+      "evidence": "progress.md, secao AI Memory e Antigravity: consumo de handoff e painel AGY (2026-10-25)"
+    },
+    {
+      "id": "M-agy-handoff-2",
+      "scope": "Antigravity: marcador <agy-user-turn/> no lugar do texto sintetico do turno (scaffolding nativo), contaminacao de handoff/resumo/titulo, deduplicacao de injecao no segundo turno, concorrencia de session-start e ausencia de replay",
+      "status": "passed",
+      "command": "npm run build (17:04:11Z); grep de dist/src/hook.js; typecheck; lint; npm test; test:e2e; test:projects; test:semantic; test:headroom; test:headroom-codex; test:claude-launch; test:codex-launch; E2E de recuperacao do agy; npm audit --omit=dev; leitura somente das bases SQLite; prova de que o teste morde com o texto antigo",
+      "observed": "Constante AGY_USER_TURN_PROMPT = '<agy-user-turn/>' (casa com /^<[A-Za-z0-9_\\/-]{1,64}>$/, test/hook.test.ts). Prova de morder: com o texto antigo, handoff automatico com open_questions 'Continue from: Antigravity user turn (...)'; com o marcador, summary 'Session ended; 5 observations recorded.' e open_questions []. test/e2e.ts (motor real): marcador por turno; nenhuma contaminacao em handoffs abertos, session-start da sessao seguinte e memory_recent; segundo turno sem injecao; dois session-starts concorrentes com um handoff aberto -> exatamente um recebe, depois nao fica open; sem replay e handoff de outro projeto continua open. Contaminacao real: 0 observacoes, handoffs ou paginas agy com o texto antigo em todos os perfis (7 matches no default sao post-tool-use do Claude Code coordenador). Regressao: typecheck e lint ok; npm test 638/638 (isolamento limpo); test:e2e 6/6; test:projects 1/1; test:semantic 1/1; test:headroom 7/7; test:headroom-codex 11/11; test:claude-launch 7/7; test:codex-launch 12/12; recuperacao agy 2/2; npm audit --omit=dev 0. hook-errors.log sem linhas novas desde 16:34:18Z. dist/src/hook.js: agy-user-turn 1, Antigravity user turn 0. Backup: .local/backups/agy-marker-20261025T170408Z. Nao validado ao vivo com agy real (exige aprovacao e cota Google).",
+      "evidence": "progress.md, secao Finalizacao AGY + Jev Gateway + AI Memory: marcador do turno, verificacao e prontidao (2026-10-25); ADR 0012, sub-nota de 2026-10-25"
+    },
+    {
+      "id": "M-agy-obs-2",
+      "scope": "Painel AGY: testes de comportamento do /app.js real em node:vm com DOM falso (estados, stale, contadores, XSS), regressao, varredura de seguranca e escopo do jev-memory restart",
+      "status": "passed",
+      "command": "test/dashboard-agy.test.ts (12 testes); npm test (638/638); varredura de tokens e de innerHTML/eval/new Function no diff e nos arquivos novos; verificacao read-only de PID e porta do escopo do restart",
+      "observed": "test/dashboard-agy.test.ts: 12/12 com /app.js real em node:vm e DOM falso montado de dashboardHtml(null). Cobertos: Carregando; Em execucao (s-ok); em execucao sem metricas (s-warn); Parado; Indisponivel; Exige chave; resposta sem entrada do agy; dado obsoleto depois de falha de poll (duas variantes); agy-kpi-warn; contador combinado '3 de 3' e '2 de 3'; nome de modelo com XSS mantido como textContent (setter de innerHTML lanca). npm test 638/638. Varredura: nenhum padrao de token (ya29., sk-, ghp_, AIza, Bearer, aim_, chave privada) no diff nem nos arquivos novos; nenhum innerHTML, eval ou new Function nos fontes do painel e do gateway. Escopo do restart (read-only): supervisor default PID 12268 (18877, 18879) e filho ai-memory PID 35960 (49375); nao afetados: gateways 8789 (17504), 8790 (2428, filho de jev-codex 37580), 8794 (30284), supervisor project-b9b5 (18892) e ai-memory 17368, stdio MCP de sessoes abertas. Painel novo na 18879 so depois de jev-memory restart, nao executado.",
+      "evidence": "progress.md, secao Finalizacao AGY + Jev Gateway + AI Memory: marcador do turno, verificacao e prontidao (2026-10-25); docs/runbooks/operations.md, Escopo do jev-memory restart"
     }
   ],
   "milestones": {

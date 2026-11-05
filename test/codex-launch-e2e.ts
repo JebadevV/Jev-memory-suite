@@ -637,6 +637,19 @@ async function mcpCall(mcp: Mcp, name: string, args: Record<string, unknown>): P
   const text = (result.content ?? []).filter(item => item.type === 'text').map(item => item.text ?? '').join('\n');
   try { return JSON.parse(text) as unknown; } catch { return text; }
 }
+// Creates a fresh handoff for one hook-capture run; returns its code word, which the run's first request must carry if the handoff is delivered.
+async function beginHandoff(mcp: Mcp, workspace: string, project: string, label: string): Promise<string> {
+  const code = `HANDOFF-${label}-${randomUUID().slice(0, 8)}`;
+  await mcpCall(mcp, 'memory_handoff_begin', {
+    summary: `E2E handoff ${label}. Code word: ${code}.`, open_questions: [], next_steps: ['state the code word'], files_touched: [],
+    shared: true, workspace, project,
+  });
+  return code;
+}
+// The open handoffs of one project as text, so a code word can be searched for.
+async function openHandoffText(mcp: Mcp, workspace: string, project: string): Promise<string> {
+  return JSON.stringify(await mcpCall(mcp, 'memory_handoff_list', { workspace, project }));
+}
 // Polls the memory server until every wanted kind is held for one session. A session with no observations yet makes the call throw: not yet.
 async function awaitKinds(p: Project, sessionId: string, wanted: string[]): Promise<{ kinds: string[]; reply: unknown }> {
   const mcp = await Mcp.connect(p.name);
@@ -706,8 +719,6 @@ function step(name: string, timeout: number, body: (t: TestContext) => Promise<v
 describe('jev-memory codex launch e2e (Headroom Codex route, isolated)', { skip, concurrency: 1, timeout: 2_400_000 }, () => {
   let c: Ctx | undefined;
   let finished = false;
-  // Code word of the handoff the code-mode step creates; the hook step reuses it to check SessionStart injection.
-  let handoffCode: string | undefined;
   const liveState = (): Ctx => {
     if (!c) throw new Error('codex launch rig was not started');
     return c;
@@ -910,7 +921,6 @@ describe('jev-memory codex launch e2e (Headroom Codex route, isolated)', { skip,
     const p = r.projects.on;
     const { workspace, project } = p.config;
     const code = `HANDOFF-E2E-${randomUUID().slice(0, 8)}`;
-    handoffCode = code;
     const mcp = await Mcp.connect(p.name);
     await mcpCall(mcp, 'memory_handoff_begin', {
       summary: `E2E handoff. Code word: ${code}.`, open_questions: [], next_steps: ['state the code word'], files_touched: [],
@@ -1146,6 +1156,12 @@ describe('jev-memory codex launch e2e (Headroom Codex route, isolated)', { skip,
     } finally {
       await app.close();
     }
+    // Fresh handoffs for this step only: the Claude run of the earlier step shares this project and would claim a pending handoff first.
+    // Mcp is plain JSON-RPC over HTTP and has no close method, so there is nothing to release.
+    const mcp = await Mcp.connect(p.name);
+    const foreignProject = `${p.config.project}-foreign`;
+    const codeForeign = await beginHandoff(mcp, p.config.workspace, foreignProject, 'FOREIGN');
+    const codeOn = await beginHandoff(mcp, p.config.workspace, p.config.project, 'ON');
     // The run uses the approval/sandbox flag only; the hook-trust bypass must never be passed.
     const hookArgs = ['exec', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', '--json', PROMPT];
     const HOOK_KINDS = ['user-prompt', 'pre-tool-use', 'post-tool-use', 'stop'];
@@ -1165,6 +1181,7 @@ describe('jev-memory codex launch e2e (Headroom Codex route, isolated)', { skip,
       t.diagnostic(`hooks-on kinds ${JSON.stringify(onCapture.kinds)}; hook log lines ${JSON.stringify(await hookLogCounts())}`);
     }
     assert.deepEqual(missingKinds(onCapture.kinds), [], `hooks-on: observations lack ${missingKinds(onCapture.kinds).join(', ')}`);
+    const codeOff = await beginHandoff(mcp, p.config.workspace, p.config.project, 'OFF');
     const off = await runCli(r, p, 'hooks-off', 'codex', hookArgs, { JMS_HEADROOM: 'off' });
     assert.equal(off.result.code, 0, `hooks-off exit code ${off.result.code ?? off.result.signal}\n${off.result.stderr.slice(-2000)}`);
     assert.ok(off.result.stdout.includes(CODEX_DONE), `hooks-off stdout does not contain ${CODEX_DONE}`);
@@ -1176,17 +1193,39 @@ describe('jev-memory codex launch e2e (Headroom Codex route, isolated)', { skip,
     }
     assert.deepEqual(missingKinds(offCapture.kinds), [], `hooks-off: observations lack ${missingKinds(offCapture.kinds).join(', ')}`);
     assert.deepEqual(onCapture.kinds, offCapture.kinds, 'hook kinds captured with Headroom differ from the no-Headroom baseline');
-    // Evidence only: the SessionStart handoff injection is recorded, not asserted.
-    const handoffInjected = handoffCode !== undefined && (on.responses[0]?.raw.includes(handoffCode) ?? false);
-    const handoffInjectedBaseline = handoffCode !== undefined && (off.responses[0]?.raw.includes(handoffCode) ?? false);
+    // Handoff delivery: each run's first request must carry its own pending handoff, and the claim must hold afterwards.
+    const injectedOn = on.responses[0]?.raw.includes(codeOn) ?? false;
+    const injectedOff = off.responses[0]?.raw.includes(codeOff) ?? false;
+    const replayedOnInOff = off.responses.some(record => record.raw.includes(codeOn));
+    const foreignLeaked = [...on.responses, ...off.responses].some(record => record.raw.includes(codeForeign));
+    const openAfter = await openHandoffText(mcp, p.config.workspace, p.config.project);
+    const stillOpenOn = openAfter.includes(codeOn);
+    const stillOpenOff = openAfter.includes(codeOff);
+    const foreignOpen = (await openHandoffText(mcp, p.config.workspace, foreignProject)).includes(codeForeign);
     const realConfigAfter = await fileHash(realConfig);
-    assert.equal(realConfigAfter, realConfigBefore, 'the real ~/.codex/config.toml changed during the hook capture');
     evidence.hookCapture = {
       hooksListed, untrustedBefore, trustedAfter, kindsHeadroom: onCapture.kinds, kindsBaseline: offCapture.kinds,
-      handoffInjectedHeadroom: handoffInjected, handoffInjectedBaseline, realCodexConfigUnchanged: realConfigAfter === realConfigBefore,
+      handoffInjectedHeadroom: injectedOn, handoffInjectedBaseline: injectedOff, handoffReplayed: replayedOnInOff,
+      foreignHandoffLeaked: foreignLeaked, handoffStillOpenAfterRun: stillOpenOn || stillOpenOff, foreignHandoffStillOpen: foreignOpen,
+      realCodexConfigUnchanged: realConfigAfter === realConfigBefore,
       bypassFlagUsed: hookArgs.some(arg => arg.includes('hook-trust')),
     };
-    t.diagnostic(`hook capture: ${hooksListed} hooks, kinds ${onCapture.kinds.join(', ')}; handoff injected with Headroom: ${handoffInjected}`);
+    // Written before the asserts below, so a failure still leaves the evidence on disk.
+    await writeFile(join(r.e2eDir, 'hooks-handoff.json'), `${JSON.stringify({
+      handoffInjectedHeadroom: injectedOn, handoffInjectedBaseline: injectedOff, handoffReplayed: replayedOnInOff,
+      foreignHandoffLeaked: foreignLeaked, handoffStillOpenAfterRun: stillOpenOn || stillOpenOff, foreignHandoffStillOpen: foreignOpen,
+      firstRequestBytesOn: on.responses[0]?.raw.length ?? 0, firstRequestBytesOff: off.responses[0]?.raw.length ?? 0,
+      responsesOn: on.responses.length, responsesOff: off.responses.length,
+    }, null, 2)}\n`);
+    assert.equal(realConfigAfter, realConfigBefore, 'the real ~/.codex/config.toml changed during the hook capture');
+    assert.equal(injectedOn, true, 'Headroom run: the pending handoff must reach the first Codex request');
+    assert.equal(injectedOff, true, 'baseline run: the pending handoff must reach the first Codex request');
+    assert.equal(replayedOnInOff, false, 'a claimed handoff must not be delivered again');
+    assert.equal(foreignLeaked, false, 'a handoff from another project must never be delivered');
+    assert.equal(stillOpenOn, false, 'a delivered handoff must be claimed in the store (Headroom run)');
+    assert.equal(stillOpenOff, false, 'a delivered handoff must be claimed in the store (baseline run)');
+    assert.equal(foreignOpen, true, 'the other project handoff must stay open');
+    t.diagnostic(`hook capture: ${hooksListed} hooks, kinds ${onCapture.kinds.join(', ')}; handoff injected with Headroom: ${injectedOn}, baseline: ${injectedOff}`);
   });
 
   step('cleanup and secrets: profiles, Headroom and Jev routers stop; no secret in logs; real homes unchanged', 420_000, async t => {

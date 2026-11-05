@@ -234,6 +234,9 @@ test('index page with no running gateway carries a CSP with no frame sources and
     const csp = String(reply.headers['content-security-policy']);
     assert.match(csp, /frame-src 'none';/);
     assert.doesNotMatch(csp, /frame-src (?!'none')/);
+    assert.match(csp, /default-src 'none';/);
+    assert.match(csp, /img-src data:;/);
+    assert.doesNotMatch(csp, /img-src[^;]*(\*|https?:)/);
     assert.match(csp, /script-src 'self';/);
     assert.doesNotMatch(csp, /script-src[^;]*unsafe-inline/);
     assert.match(csp, /connect-src 'self';/);
@@ -291,9 +294,10 @@ test('index page has the stable memory sections in pt-BR', async () => {
       'm-sessions', 'm-observations', 'm-pages', 'm-last', 'recent', 'recent-empty']) {
       assert.match(reply.body, new RegExp(`id="${id}"`), id);
     }
-    assert.match(reply.body, /<header>/);
-    assert.match(reply.body, /<main>/);
-    assert.match(reply.body, /aria-labelledby="pending-title"/);
+    assert.match(reply.body, /<header class="topbar"/);
+    assert.match(reply.body, /<main class="content"/);
+    assert.match(reply.body, /<aside class="sidebar" id="sidebar"/);
+    assert.match(reply.body, /aria-labelledby="totals-title"/);
     assert.match(reply.body, /aria-labelledby="recent-title"/);
   });
 });
@@ -539,7 +543,8 @@ test('memory feed route returns items from simultaneous sessions with their clie
 test('panel script prefixes each toast with the client label through textContent only', async () => {
   await withDashboard(async () => summarize(briefing(0)), async port => {
     const reply = await call(port, '/app.js');
-    assert.match(reply.body, /dash\(item\.agentLabel\) \+ ' · ' \+ dash\(item\.projectLabel\)/);
+    assert.match(reply.body, /dash\(agentName\) \+ ' · ' \+ dash\(item\.projectLabel\)/);
+    assert.match(reply.body, /'claude-code': 'Claude Code', codex: 'OpenAI Codex', 'antigravity-cli': 'Google Antigravity'/);
     assert.match(reply.body, /project\.textContent = /);
     assert.doesNotMatch(reply.body, /innerHTML|outerHTML|insertAdjacentHTML/);
   });

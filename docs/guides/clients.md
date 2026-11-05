@@ -1,6 +1,6 @@
 # Clientes
 
-Propósito: descrever os procedimentos de registro, verificação, lançamento e validação do MCP e dos hooks em Claude CLI, Codex CLI, Codex Desktop e Antigravity CLI (agy), com as etapas de confiança que cada cliente exige. Público: usuários e validadores. Data: 2026-10-24.
+Propósito: descrever os procedimentos de registro, verificação, lançamento e validação do MCP e dos hooks em Claude CLI, Codex CLI, Codex Desktop e Antigravity CLI (agy), com as etapas de confiança que cada cliente exige. Público: usuários e validadores. Data: 2026-10-25.
 
 **Status de validação** (fonte: [tests.json](../../tests.json)): Claude Code CLI `passed` (os 9 eventos verificados em sessões reais; a TUI interativa não foi exercitada); Codex CLI `partial` (MCP aprovado; captura por hooks comprovada no Farol com bypass temporário; confiança normal dos hooks pendente do usuário); Codex Desktop `pending`, **não verificado** (precisa ser validado dentro do app, com o checklist abaixo); Antigravity CLI (`agy` 1.4.5) `passed` na CLI, com IDE e App não verificados, e gateway Code Assist validado com `agy` 1.4.7 ([seção própria](#antigravity-cli-agy)). Este guia descreve procedimentos e o que cada resultado comprovou.
 
@@ -236,6 +236,7 @@ node bin/jev-memory.mjs codex --dashboard      # --status, --stop, --setup, --lo
 ```
 
 - Use com perfis cujo gateway da suíte está desligado (`gateway.enabled: false`, padrão): quem gerencia o gateway é o launcher upstream.
+- Todo lançamento com `jev-memory-codex`, `jev-memory-claude` ou `jev-memory-agy`, em qualquer projeto, também mantém em segundo plano o dashboard central (`http://127.0.0.1:18879/`, com a porta do perfil-modelo `default`), sem abrir o navegador. Falhas nesse passo nunca afetam o cliente. `JMS_CENTRAL_DASHBOARD=off` desliga esse passo por execução (os testes usam isso).
 - Claude com `headroom.enabled: true` (opcional, desligado por padrão): o `claude` passa pelo Headroom quando as verificações passam, e cai no launcher upstream, com o motivo em stderr, quando alguma falha. `JMS_HEADROOM=off` desliga por execução. Não se aplica ao Codex. Procedimento e limites em [otimização de tokens](token-optimization.md#headroom-opcional-claude).
 - `codex exec` (e `e`, `resume`, `review`, `fork`): o Codex 0.163 ignora `-c` antes do subcomando; a suíte repete depois dele os mesmos parâmetros de provedor que o `clients.mjs` upstream gera.
 - Validação real em 2026-10-21: Codex `exec` com `model_provider` `jev-gateway`, 3 entradas no log do gateway (2 `forced`), `memory_status` no `jev_memory_suite`; Claude `-p` com 3 entradas (2 `hint`), hooks com exit 0 e MCP conectado. Com o provedor Jev real (TypeSafe) e o login do próprio cliente.
@@ -278,11 +279,13 @@ jev-memory clients remove antigravity .
 | Evento do agy | Evento da suíte | Saída |
 |---|---|---|
 | `PreInvocation` | `session-start` | Saída nativa do motor; handoff pendente via `injectSteps[].ephemeralMessage` |
+| `PreInvocation` com `invocationNum = 0`, depois do session-start | `user-prompt` | Sem contexto injetado; texto fixo, sem conteúdo do prompt |
 | `PreToolUse` | `pre-tool-use` | `{"decision":"allow"}` |
 | `PostToolUse` | `post-tool-use` | Saída nativa do motor |
 | `Stop` | `stop` | `{"decision":""}` |
 
 - `SessionStart` e `PostInvocation` existem no agy, mas não são usados. O motor nativo inicia a sessão só em `PreInvocation` com `invocationNum = 0` e deduplica por `conversationId`. O `invocationNum` volta a 0 a cada turno do usuário.
+- O `user-prompt` é emitido pelo hook, porque o agy não expõe o texto do prompt no contrato de hook. Sem ele, uma sessão sem ferramentas era lifecycle-only, e o handoff reivindicado voltava ao pool no session-end. Efeito: sessões agy sem ferramentas agora geram página de resumo e handoff automático, como Claude e Codex, e o texto fixo `<agy-user-turn/>` é gravado como prompt nessas sessões. O marcador é tratado como scaffolding (predicado nativo `looks_like_markup_block`): não entra em resumo, perguntas em aberto nem título. Resíduo: aparece cru na lista `## Prompts` da página de sessão. Detalhes em [ADR 0012](../architecture/adr/0012-antigravity-cli-integration.md) (acréscimo de 2026-10-25).
 - `Stop` é fim de turno, não fim de sessão.
 - A suíte sempre responde `allow` no `PreToolUse`. Ela observa e não contorna os prompts de permissão do agy. Uma opção de auto-aprovação do agy faria isso; a suíte não a configura.
 - Falha aberta: em erro interno, o hook sai com código 0. Os diagnósticos sem conteúdo ficam em `.local/profiles/<perfil>/logs/hook-errors.log` e `hook-skips.log`.
