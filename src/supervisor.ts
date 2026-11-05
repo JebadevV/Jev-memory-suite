@@ -39,6 +39,9 @@ export function restartDelay(history: number[], now: number): number | undefined
 // An optional service (Headroom) that fails changes only its own state; memory and the supervisor keep running.
 interface Service { name: string; command: string; args: string[]; env: NodeJS.ProcessEnv; port: number; path: string; optional?: boolean; cwd?: string }
 
+// Lifecycle lines go to the supervisor's stderr, which the launcher appends to supervisor.log. They carry no secrets.
+const note = (msg: string) => console.error(`${new Date().toISOString()} ${msg}`);
+
 async function main(name: string) {
   const c = await readConfig(name), dir = profileDir(name), key = await token(dir), routerKey = await token(dir, 'router-token');
   const children = new Map<string, ChildProcess>();
@@ -60,11 +63,12 @@ async function main(name: string) {
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(state));
     } else if (req.url === '/stop' && req.method === 'POST') {
       res.writeHead(200, { 'content-type': 'application/json' }).end('{"stopping":true}');
-      void shutdown();
+      void shutdown('control /stop');
     } else res.writeHead(404).end();
   });
-  async function shutdown() {
+  async function shutdown(reason: string) {
     if (stopping) return; stopping = true; state.phase = 'stopping';
+    note(`supervisor stopping: ${reason}`);
     dashboard?.closeAllConnections(); dashboard?.close();
     await Promise.all([...children.values()].map(child => new Promise<void>(done => {
       // A child ended by a signal has no exit code, so its signal code counts as exited too.
@@ -73,10 +77,12 @@ async function main(name: string) {
       const timeout = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); done(); }, 6000);
       timeout.unref();
     })));
-    server.close(() => process.exit(0)); server.closeAllConnections();
+    server.close(() => { note('supervisor stopped'); process.exit(0); }); server.closeAllConnections();
   }
   await new Promise<void>((ok, fail) => { server.once('error', fail); server.listen(c.controlPort, '127.0.0.1', ok); });
-  process.on('SIGINT', () => void shutdown()); process.on('SIGTERM', () => void shutdown());
+  note(`supervisor ${name} started pid=${process.pid} ppid=${process.ppid}`);
+  // SIGHUP and SIGBREAK are the Windows console close and Ctrl-Break events; they take the same graceful path.
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK'] as const) process.on(signal, () => void shutdown(signal));
   function launch(service: Service) {
     const { name: serviceName, command, args, env } = service;
     if (service.optional) optionalServices.add(serviceName);
@@ -102,13 +108,14 @@ async function main(name: string) {
       state.services[serviceName] = 'failed';
       if (!service.optional) state.phase = 'failed';
     });
-    child.once('exit', () => {
+    child.once('exit', (code, signal) => {
       log.end();
       if (children.get(serviceName) !== child) return;
       // Only a child that was ready can be restarted; one that dies while starting fails the supervisor as before.
       const wasReady = state.services[serviceName] === 'ready';
       state.services[serviceName] = 'stopped';
       if (stopping) return;
+      note(`service ${serviceName} exited code=${code} signal=${signal}`);
       if (wasReady) void restart(service);
       else if (service.optional) state.services[serviceName] = 'failed';
       else state.phase = 'failed';
@@ -136,7 +143,7 @@ async function main(name: string) {
     }
     state.services[service] = 'failed'; state.phase = 'failed';
     console.error('Service restart failed. Inspect profile logs and run doctor.');
-    setTimeout(() => void shutdown(), 2500);
+    setTimeout(() => void shutdown(`service failure: ${service}`), 2500);
   }
   // Relaunches a ready child after its unexpected exit. The port is re-checked, so a foreign listener fails the restart instead of looping.
   async function restart(service: Service) {
@@ -269,7 +276,7 @@ async function main(name: string) {
   } catch {
     state.phase = 'failed'; console.error('Service startup failed. Inspect profile logs and run doctor.');
     // Failure is observable briefly, then owned children are cleaned up.
-    setTimeout(() => void shutdown(), 2500);
+    setTimeout(() => void shutdown('service startup failed'), 2500);
   }
 }
 if (process.argv[1]?.replaceAll('\\', '/').endsWith('/supervisor.js')) {
